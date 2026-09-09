@@ -1,0 +1,19 @@
+/* The readiness component ships its own scoped styles under .crc-root.
+   Keep this file to page-level resets only, so the two never fight. */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #edf1f4;
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #1b2a33;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+}

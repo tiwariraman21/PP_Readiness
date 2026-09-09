@@ -1,0 +1,21 @@
+{
+  "name": "pp-readiness",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Component readiness check for SAP PP - plant, storage location and BOM level shortage analysis.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "standalone": "powershell -ExecutionPolicy Bypass -File tools/build-standalone.ps1"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}
