@@ -1,14 +1,16 @@
 {
-  "name": "pp-readiness",
+  "name": "ppc-dashboard",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Component readiness check for SAP PP - plant, storage location and BOM level shortage analysis.",
+  "description": "PPC Dashboard - component readiness for SAP PP: plant, storage location and BOM level shortage analysis.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "standalone": "powershell -ExecutionPolicy Bypass -File tools/build-standalone.ps1"
+    "standalone": "powershell -ExecutionPolicy Bypass -File tools/build-standalone.ps1",
+    "serve": "powershell -ExecutionPolicy Bypass -File tools/serve.ps1",
+    "workbook": "powershell -ExecutionPolicy Bypass -File tools/build-workbook.ps1"
   },
   "dependencies": {
     "react": "^18.3.1",

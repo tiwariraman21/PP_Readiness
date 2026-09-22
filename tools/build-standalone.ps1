@@ -4,10 +4,14 @@
 
 .DESCRIPTION
   A fallback for machines with no Node toolchain. React and Babel are pulled
-  from CDN and the JSX is transpiled in the browser at load time, so the
-  output is a single file you can double-click. Slower to start than the Vite
-  build and it needs network access on first load - prefer `npm run dev` when
-  Node is available.
+  from CDN and the JSX is transpiled in the browser at load time. Slower to
+  start than the Vite build and it needs network access on first load - prefer
+  `npm run dev` when Node is available.
+
+  The output is not a double-click file. The page reads its data from
+  PP_Readiness_Database.xlsx at runtime and browsers refuse to fetch a local
+  file from a file:// page, so the folder has to be served over http. The
+  workbook is copied next to the HTML here; serve them with tools\serve.ps1.
 #>
 param(
   [string]$Src = (Join-Path $PSScriptRoot "..\src\components\ComponentReadinessCheck.jsx"),
@@ -30,7 +34,10 @@ $jsx = [regex]::Replace($jsx, '(?m)^\s*import\s+React\s+from\s*["'']react["''];?
 # No module system in the page, so the default export keyword has to go.
 $jsx = [regex]::Replace($jsx, '(?m)^\s*export\s+default\s+function\s', 'function ')
 
-if ($jsx -match '(?m)^\s*(import|export)\s') {
+# -match is case-insensitive and \s matches a newline, so a comment line that says
+# only "EXPORT" used to trip this. Require a space or tab and a following token, which
+# real module syntax always has.
+if ($jsx -cmatch '(?m)^\s*(import|export)[ \t]+\S') {
   throw "module syntax still present after rewrite - the standalone build only supports a single self-contained component"
 }
 if ($jsx -match '</script') {
@@ -43,7 +50,7 @@ $head = @'
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PP Readiness</title>
+<title>PPC Dashboard</title>
 <style>
   html, body { margin: 0; padding: 0; background: #EDF1F4; }
   #boot {
@@ -53,9 +60,9 @@ $head = @'
   #boot b { color: #b00; }
   #boot pre { white-space: pre-wrap; font-size: 12px; color: #b00; }
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/8.0.4/babel.min.js"></script>
+<script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/8.0.4/babel.min.js"></script>
 </head>
 <body>
 <div id="root"><div id="boot">Compiling the component in the browser, one moment...</div></div>
@@ -65,7 +72,7 @@ $head = @'
     var b = document.getElementById("boot");
     if (b) {
       b.innerHTML = "<b>Failed to start.</b><pre></pre>";
-      b.querySelector("pre").textContent = (e.message || e.error) + "";
+      b.querySelector("pre").textContent = ((e.error && e.error.stack) || e.message || e.error) + "";
     }
   });
 
@@ -97,4 +104,14 @@ $html = $head + "`n" + $jsx + $tail
 
 $full = (Resolve-Path -LiteralPath $Out).Path
 "wrote {0} ({1:N0} bytes)" -f $full, (Get-Item -LiteralPath $full).Length
-"open it with: Start-Process '$full'"
+
+# The page fetches the workbook at runtime, so it has to travel with the HTML.
+$book = Join-Path $PSScriptRoot "..\public\PP_Readiness_Database.xlsx"
+if (Test-Path -LiteralPath $book) {
+  Copy-Item -LiteralPath $book -Destination (Join-Path $outDir "PP_Readiness_Database.xlsx") -Force
+  "copied PP_Readiness_Database.xlsx alongside it"
+} else {
+  Write-Warning "public\PP_Readiness_Database.xlsx is missing - build it with tools\build-workbook.ps1, or the page will not start"
+}
+
+"serve it with: powershell -ExecutionPolicy Bypass -File tools\serve.ps1"

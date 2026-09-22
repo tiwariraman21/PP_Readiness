@@ -4,162 +4,24 @@ import React, { useState, useMemo, useCallback, useEffect, useRef } from "react"
    MASTER DATA
    ============================================================ */
 
-const PLANTS = [
-  { id: "1000", name: "Pune", region: "West" },
-  { id: "1100", name: "Chakan", region: "West" },
-  { id: "1200", name: "Chennai", region: "South" },
-];
+let PLANTS = [];
 
 // Inter-plant transit days (picking + freight)
-const TRANSIT = {
-  "1000-1100": 1, "1100-1000": 1,
-  "1000-1200": 4, "1200-1000": 4,
-  "1100-1200": 4, "1200-1100": 4,
-};
+let TRANSIT = {};
 
-const SLOCS = [
-  { code: "RM01", name: "Raw material store", type: "Unrestricted", defaultIn: true,  effort: 0, note: "" },
-  { code: "PR01", name: "Production supply area", type: "Unrestricted", defaultIn: true, effort: 0, note: "" },
-  { code: "QI01", name: "Quality inspection", type: "Quality hold", defaultIn: false, effort: 2, note: "Needs usage decision from QA before issue" },
-  { code: "SC01", name: "Subcontract staging", type: "Staged for dispatch", defaultIn: false, effort: 3, note: "Staged at the plant for dispatch to a subcontractor, not yet sent" },
-  { code: "IT01", name: "In transit", type: "In transit", defaultIn: false, effort: 4, note: "Post goods receipt on arrival to make issuable" },
-  { code: "BL01", name: "Blocked stock", type: "Blocked", defaultIn: false, effort: 5, note: "Blocked — needs QA release or scrap decision" },
-];
+let SLOCS = [];
 
-const SLOC_BY_CODE = Object.fromEntries(SLOCS.map((s) => [s.code, s]));
+// Indexes and lookups built from the tables above. They are rebuilt by
+// rebuildDerived() once the workbook has been read, not at module load.
+let SLOC_BY_CODE = {};
 
 // procurement: F = bought out, E = made in-house
-const MATERIALS = {
-  "FG-PUMP-100":   { desc: "Hydraulic pump assembly HP-100", uom: "EA", lead: 9,  proc: "E", mrp: "P01" },
-  "FG-PUMP-200":   { desc: "Hydraulic pump assembly HP-200 twin rotor", uom: "EA", lead: 12, proc: "E", mrp: "P01" },
-  "FG-GEAR-200":   { desc: "Gearbox GB-200", uom: "EA", lead: 8, proc: "E", mrp: "P01" },
-  "FG-CTRL-300":   { desc: "Control panel CP-300", uom: "EA", lead: 11, proc: "E", mrp: "P02" },
-
-  "SA-HOUSING-10": { desc: "Pump housing sub-assembly, cast", uom: "EA", lead: 6, proc: "E", mrp: "P01" },
-  "SA-HOUSING-15": { desc: "Pump housing sub-assembly, fabricated", uom: "EA", lead: 5, proc: "E", mrp: "P01" },
-  "SA-ROTOR-20":   { desc: "Rotor sub-assembly", uom: "EA", lead: 5, proc: "E", mrp: "P01" },
-  "SA-IMPELLER-25":{ desc: "Impeller sub-assembly", uom: "EA", lead: 4, proc: "E", mrp: "P01" },
-  "SA-CASE-30":    { desc: "Gear case sub-assembly", uom: "EA", lead: 6, proc: "E", mrp: "P01" },
-
-  "RM-CAST-001":   { desc: "Cast iron housing blank", uom: "EA", lead: 21, proc: "F", mrp: "B12" },
-  "RM-CAST-002":   { desc: "Gear case casting", uom: "EA", lead: 21, proc: "F", mrp: "B12" },
-  "RM-SEAL-014":   { desc: "O-ring seal 40 mm NBR", uom: "EA", lead: 12, proc: "F", mrp: "B10" },
-  "RM-BOLT-M8":    { desc: "Hex bolt M8 x 40 8.8", uom: "EA", lead: 7, proc: "F", mrp: "B10" },
-  "RM-SHAFT-220":  { desc: "Drive shaft 220 mm EN8", uom: "EA", lead: 18, proc: "F", mrp: "B12" },
-  "RM-BEAR-6204":  { desc: "Ball bearing 6204 2RS", uom: "EA", lead: 14, proc: "F", mrp: "B10" },
-  "RM-KEY-08":     { desc: "Parallel key 8 x 7 x 30", uom: "EA", lead: 5, proc: "F", mrp: "B10" },
-  "RM-IMP-BLANK-05": { desc: "Impeller blank, aluminium", uom: "EA", lead: 16, proc: "F", mrp: "B12" },
-  "RM-VANE-06":    { desc: "Vane insert 6 mm", uom: "EA", lead: 11, proc: "F", mrp: "B10" },
-  "RM-GASKET-88":  { desc: "Gasket 88 mm graphite", uom: "EA", lead: 10, proc: "F", mrp: "B10" },
-  "RM-FABPLT-06":  { desc: "Housing plate set, laser cut 6 mm", uom: "EA", lead: 14, proc: "F", mrp: "B12" },
-  "RM-SEAL-050":   { desc: "O-ring seal 50 mm NBR", uom: "EA", lead: 12, proc: "F", mrp: "B10" },
-  "RM-WELD-WIRE":  { desc: "Welding wire 1.2 mm", uom: "KG", lead: 6, proc: "F", mrp: "B11" },
-  "RM-CASE-MC":    { desc: "Gear case, machined bought-out", uom: "EA", lead: 24, proc: "F", mrp: "B12" },
-  "RM-FILTER-25":  { desc: "Hydraulic filter cartridge 25 µ", uom: "EA", lead: 9, proc: "F", mrp: "B11" },
-  "RM-PLATE-ID":   { desc: "Identification nameplate", uom: "EA", lead: 9, proc: "F", mrp: "B11" },
-  "RM-OIL-SAE40":  { desc: "Hydraulic oil SAE 40", uom: "L",  lead: 7, proc: "F", mrp: "B11" },
-  "RM-GEAR-Z28":   { desc: "Spur gear Z28 hardened", uom: "EA", lead: 25, proc: "F", mrp: "B12" },
-  "RM-ENCL-400":   { desc: "Enclosure 400 x 300 IP65", uom: "EA", lead: 16, proc: "F", mrp: "B20" },
-  "RM-PLC-S71":    { desc: "PLC module S7-1200 CPU", uom: "EA", lead: 45, proc: "F", mrp: "B20" },
-  "RM-CONT-25A":   { desc: "Contactor 25 A 3-pole", uom: "EA", lead: 20, proc: "F", mrp: "B20" },
-  "RM-WIRE-15":    { desc: "Control wire 1.5 sq mm", uom: "M",  lead: 8, proc: "F", mrp: "B20" },
-  "RM-TERM-BLK":   { desc: "Terminal block 4 mm", uom: "EA", lead: 10, proc: "F", mrp: "B20" },
-};
+let MATERIALS = {};
 
 // parent -> components. scrap = component scrap %
 /* Bills of material, keyed by material then BOM alternative.
    A finished good with more than one alternative is reached through a production version. */
-const BOMS = {
-  "FG-PUMP-100": {
-    "1": [
-      { code: "SA-HOUSING-10", qty: 1, scrap: 0 },
-      { code: "SA-ROTOR-20", qty: 1, scrap: 0 },
-      { code: "RM-GASKET-88", qty: 2, scrap: 8 },
-      { code: "RM-FILTER-25", qty: 1, scrap: 0 },
-      { code: "RM-PLATE-ID", qty: 1, scrap: 0 },
-      { code: "RM-OIL-SAE40", qty: 1.5, scrap: 2 },
-    ],
-    "2": [
-      { code: "SA-HOUSING-15", qty: 1, scrap: 0 },
-      { code: "SA-ROTOR-20", qty: 1, scrap: 0 },
-      { code: "RM-GASKET-88", qty: 2, scrap: 8 },
-      { code: "RM-FILTER-25", qty: 1, scrap: 0 },
-      { code: "RM-PLATE-ID", qty: 1, scrap: 0 },
-      { code: "RM-OIL-SAE40", qty: 1.5, scrap: 2 },
-    ],
-  },
-  "FG-PUMP-200": {
-    "1": [
-      { code: "SA-HOUSING-10", qty: 1, scrap: 0 },
-      { code: "SA-ROTOR-20", qty: 2, scrap: 0 },
-      { code: "RM-GASKET-88", qty: 3, scrap: 8 },
-      { code: "RM-FILTER-25", qty: 2, scrap: 0 },
-      { code: "RM-PLATE-ID", qty: 1, scrap: 0 },
-      { code: "RM-OIL-SAE40", qty: 2.5, scrap: 2 },
-    ],
-  },
-  "SA-HOUSING-10": {
-    "1": [
-      { code: "RM-CAST-001", qty: 1, scrap: 2 },
-      { code: "RM-SEAL-014", qty: 2, scrap: 5 },
-      { code: "RM-BOLT-M8", qty: 8, scrap: 3 },
-    ],
-  },
-  "SA-HOUSING-15": {
-    "1": [
-      { code: "RM-FABPLT-06", qty: 1, scrap: 2 },
-      { code: "RM-SEAL-050", qty: 2, scrap: 5 },
-      { code: "RM-BOLT-M8", qty: 10, scrap: 3 },
-      { code: "RM-WELD-WIRE", qty: 0.4, scrap: 5 },
-    ],
-  },
-  "SA-ROTOR-20": {
-    "1": [
-      { code: "RM-SHAFT-220", qty: 1, scrap: 0 },
-      { code: "SA-IMPELLER-25", qty: 1, scrap: 0 },
-      { code: "RM-BEAR-6204", qty: 2, scrap: 0 },
-      { code: "RM-KEY-08", qty: 1, scrap: 4 },
-    ],
-  },
-  "SA-IMPELLER-25": {
-    "1": [
-      { code: "RM-IMP-BLANK-05", qty: 1, scrap: 3 },
-      { code: "RM-VANE-06", qty: 6, scrap: 5 },
-    ],
-  },
-  "FG-GEAR-200": {
-    "1": [
-      { code: "SA-CASE-30", qty: 1, scrap: 0 },
-      { code: "RM-GEAR-Z28", qty: 2, scrap: 0 },
-      { code: "RM-BEAR-6204", qty: 4, scrap: 0 },
-      { code: "RM-SEAL-014", qty: 3, scrap: 5 },
-      { code: "RM-OIL-SAE40", qty: 0.8, scrap: 2 },
-    ],
-    "2": [
-      { code: "RM-CASE-MC", qty: 1, scrap: 0 },
-      { code: "RM-GEAR-Z28", qty: 2, scrap: 0 },
-      { code: "RM-BEAR-6204", qty: 4, scrap: 0 },
-      { code: "RM-SEAL-014", qty: 3, scrap: 5 },
-      { code: "RM-OIL-SAE40", qty: 0.8, scrap: 2 },
-    ],
-  },
-  "SA-CASE-30": {
-    "1": [
-      { code: "RM-CAST-002", qty: 1, scrap: 2 },
-      { code: "RM-BOLT-M8", qty: 12, scrap: 3 },
-    ],
-  },
-  "FG-CTRL-300": {
-    "1": [
-      { code: "RM-ENCL-400", qty: 1, scrap: 0 },
-      { code: "RM-PLC-S71", qty: 1, scrap: 0 },
-      { code: "RM-CONT-25A", qty: 3, scrap: 0 },
-      { code: "RM-WIRE-15", qty: 25, scrap: 6 },
-      { code: "RM-TERM-BLK", qty: 40, scrap: 2 },
-      { code: "RM-PLATE-ID", qty: 1, scrap: 0 },
-    ],
-  },
-};
+let BOMS = {};
 
 /* Which BOM alternative applies to a material, given the versions chosen for this run */
 function componentsOf(code, rules) {
@@ -174,45 +36,15 @@ const bomAlternatives = (code) => Object.keys(BOMS[code] || {});
 
 const NAV_GROUPS = [
   { group: "Plan", items: [["run", "Planning run"], ["demand", "Demand and supply"], ["capacity", "Capacity"], ["flow", "Production vs dispatch"], ["sales", "Sales and delivery risk"]] },
-  { group: "Readiness", items: [["components", "Components"], ["shortages", "Shortages"], ["contention", "Contention"], ["schedule", "Schedule"]] },
+  { group: "Readiness", items: [["components", "Components"], ["shortages", "Shortages"], ["contention", "Contention"]] },
   { group: "Reference", items: [["stock", "Stock"], ["consumption", "Consumption history"], ["prod", "Production orders"], ["orders", "Purchase orders"], ["subcon", "Subcontracting"]] },
-  { group: "Support", items: [["summary", "Summary"], ["analysis", "Planner analysis"], ["sap", "SAP mapping"]] },
+  { group: "Support", items: [["summary", "Summary"]] },
 ];
 
 /* Production versions. Each ties a BOM alternative to a routing, a line, a lot size
    range and a validity period. MRP picks the first version that is unlocked, valid on
    the date and covers the order quantity. */
-const PROD_VERSIONS = {
-  "FG-PUMP-100": [
-    { version: "0001", text: "Cast housing, assembly line A", wc: "ASSY-A", hoursPer: 6.5, bom: "1", bomUsage: "1",
-      routing: "50000123", counter: "01", line: "Assembly line A",
-      lotFrom: 1, lotTo: 60, validFrom: -540, validTo: 240, locked: false },
-    { version: "0002", text: "Fabricated housing, assembly line B", wc: "ASSY-B", hoursPer: 8, bom: "2", bomUsage: "1",
-      routing: "50000188", counter: "01", line: "Assembly line B",
-      lotFrom: 20, lotTo: 500, validFrom: -180, validTo: 400, locked: false },
-  ],
-  "FG-PUMP-200": [
-    { version: "0001", text: "Twin rotor, assembly line A", wc: "ASSY-A", hoursPer: 11, bom: "1", bomUsage: "1",
-      routing: "50000210", counter: "01", line: "Assembly line A",
-      lotFrom: 1, lotTo: 9999, validFrom: -300, validTo: 400, locked: false },
-  ],
-  "FG-GEAR-200": [
-    { version: "0001", text: "In-house cased, small lot", wc: "GEAR-01", hoursPer: 9, bom: "1", bomUsage: "1",
-      routing: "50000301", counter: "01", line: "Gear line 1",
-      lotFrom: 1, lotTo: 30, validFrom: -600, validTo: 300, locked: false },
-    { version: "0002", text: "Bought-out case, large lot", wc: "GEAR-02", hoursPer: 6.5, bom: "2", bomUsage: "1",
-      routing: "50000305", counter: "01", line: "Gear line 2",
-      lotFrom: 31, lotTo: 9999, validFrom: -200, validTo: 300, locked: false },
-  ],
-  "FG-CTRL-300": [
-    { version: "0001", text: "Panel build, bench 1", wc: "PANEL-01", hoursPer: 14, bom: "1", bomUsage: "1",
-      routing: "50000410", counter: "01", line: "Panel bench 1",
-      lotFrom: 1, lotTo: 9999, validFrom: -420, validTo: 300, locked: false },
-    { version: "0002", text: "Panel build, bench 2", wc: "PANEL-02", hoursPer: 14, bom: "1", bomUsage: "1",
-      routing: "50000415", counter: "01", line: "Panel bench 2",
-      lotFrom: 1, lotTo: 9999, validFrom: -90, validTo: 300, locked: true },
-  ],
-};
+let PROD_VERSIONS = {};
 
 /* Mirrors the selection MRP performs, and says plainly why a version was picked */
 function selectVersion(material, qty, date, forced, t0) {
@@ -263,253 +95,49 @@ function selectVersion(material, qty, date, forced, t0) {
     warn: "All production versions are locked. The order cannot be created until one is released." };
 }
 
-const FINISHED_GOODS = [
-  { code: "FG-PUMP-100", plant: "1000", defaultQty: 40 },
-  { code: "FG-PUMP-200", plant: "1000", defaultQty: 12 },
-  { code: "FG-GEAR-200", plant: "1100", defaultQty: 25 },
-  { code: "FG-CTRL-300", plant: "1200", defaultQty: 15 },
-];
+let FINISHED_GOODS = [];
 
 // material / plant / storage location / qty
-const STOCK = [
-  // ---- Pune 1000
-  { m: "FG-PUMP-100",  p: "1000", s: "PR01", q: 18 },
-  { m: "FG-PUMP-200",  p: "1000", s: "PR01", q: 2 },
-  { m: "SA-HOUSING-10", p: "1000", s: "PR01", q: 12 },
-  { m: "SA-ROTOR-20",   p: "1000", s: "PR01", q: 5 },
-  { m: "SA-IMPELLER-25",p: "1000", s: "PR01", q: 8 },
-  { m: "RM-IMP-BLANK-05", p: "1000", s: "RM01", q: 12 },
-  { m: "RM-VANE-06",    p: "1000", s: "RM01", q: 90 },
-  { m: "RM-VANE-06",    p: "1000", s: "QI01", q: 200 },
-  { m: "RM-CAST-001",   p: "1000", s: "RM01", q: 45 },
-  { m: "RM-SEAL-014",   p: "1000", s: "RM01", q: 30 },
-  { m: "RM-SEAL-014",   p: "1000", s: "QI01", q: 40 },
-  { m: "RM-BOLT-M8",    p: "1000", s: "RM01", q: 800 },
-  { m: "RM-SHAFT-220",  p: "1000", s: "RM01", q: 20 },
-  { m: "RM-BEAR-6204",  p: "1000", s: "RM01", q: 40 },
-  { m: "RM-BEAR-6204",  p: "1000", s: "SC01", q: 25 },
-  { m: "RM-KEY-08",     p: "1000", s: "RM01", q: 500 },
-  { m: "RM-GASKET-88",  p: "1000", s: "RM01", q: 20 },
-  { m: "SA-HOUSING-15", p: "1000", s: "PR01", q: 3 },
-  { m: "RM-FABPLT-06",  p: "1000", s: "RM01", q: 60 },
-  { m: "RM-SEAL-050",   p: "1000", s: "RM01", q: 220 },
-  { m: "RM-WELD-WIRE",  p: "1000", s: "RM01", q: 25 },
-  { m: "RM-FILTER-25",  p: "1000", s: "RM01", q: 15 },
-  { m: "RM-PLATE-ID",   p: "1000", s: "RM01", q: 300 },
-  { m: "RM-OIL-SAE40",  p: "1000", s: "RM01", q: 70 },
-  { m: "RM-CONT-25A",   p: "1000", s: "RM01", q: 60 },
-  { m: "RM-CAST-002",   p: "1000", s: "RM01", q: 10 },
-
-  { doc: "4900011860", item: "1", p: "1000", offset: -26, mvt: "101", ref: "PRD-1000198", refType: "PRD", m: "FG-PUMP-100", qty: 16, sloc: "PR01", user: "S. Jadhav" },
-  { doc: "4900011905", item: "1", p: "1000", offset: -19, mvt: "101", ref: "PRD-1000212", refType: "PRD", m: "FG-PUMP-100", qty: 12, sloc: "PR01", user: "S. Jadhav" },
-  { doc: "4900011948", item: "1", p: "1000", offset: -12, mvt: "101", ref: "PRD-1000221", refType: "PRD", m: "FG-PUMP-200", qty: 6, sloc: "PR01", user: "M. Shinde" },
-  { doc: "4900012004", item: "1", p: "1000", offset: -5, mvt: "101", ref: "PRD-1000229", refType: "PRD", m: "FG-PUMP-100", qty: 14, sloc: "PR01", user: "S. Jadhav" },
-  { doc: "4900011865", item: "1", p: "1000", offset: -25, mvt: "601", ref: "80001201", refType: "SD", m: "FG-PUMP-100", qty: 14, sloc: "PR01", user: "A. Bhosale" },
-  { doc: "4900011910", item: "1", p: "1000", offset: -18, mvt: "601", ref: "80001208", refType: "SD", m: "FG-PUMP-100", qty: 10, sloc: "PR01", user: "A. Bhosale" },
-  { doc: "4900011960", item: "1", p: "1000", offset: -11, mvt: "601", ref: "80001222", refType: "SD", m: "FG-PUMP-200", qty: 5, sloc: "PR01", user: "A. Bhosale" },
-  { doc: "4900012020", item: "1", p: "1000", offset: -4, mvt: "601", ref: "80001236", refType: "SD", m: "FG-PUMP-100", qty: 12, sloc: "PR01", user: "A. Bhosale" },
-
-  // ---- Chakan 1100
-  { m: "FG-GEAR-200",   p: "1100", s: "PR01", q: 22 },
-  { m: "SA-CASE-30",    p: "1100", s: "PR01", q: 30 },
-  { m: "RM-GEAR-Z28",   p: "1100", s: "RM01", q: 120 },
-  { m: "RM-BEAR-6204",  p: "1100", s: "RM01", q: 260 },
-  { m: "RM-SEAL-014",   p: "1100", s: "RM01", q: 200 },
-  { m: "RM-OIL-SAE40",  p: "1100", s: "RM01", q: 80 },
-  { m: "RM-BOLT-M8",    p: "1100", s: "RM01", q: 1500 },
-  { m: "RM-CAST-002",   p: "1100", s: "RM01", q: 60 },
-  { m: "RM-CASE-MC",    p: "1100", s: "RM01", q: 20 },
-  { m: "RM-GASKET-88",  p: "1100", s: "BL01", q: 150 },
-  { m: "RM-SHAFT-220",  p: "1100", s: "IT01", q: 30 },
-
-  { doc: "4900011930", item: "1", p: "1100", offset: -16, mvt: "601", ref: "80001215", refType: "SD", m: "FG-GEAR-200", qty: 15, sloc: "PR01", user: "P. More" },
-  { doc: "4900012040", item: "1", p: "1100", offset: -2, mvt: "601", ref: "80001243", refType: "SD", m: "FG-GEAR-200", qty: 8, sloc: "PR01", user: "P. More" },
-
-  // ---- Chennai 1200
-  { m: "FG-CTRL-300",   p: "1200", s: "PR01", q: 4 },
-  { m: "RM-ENCL-400",   p: "1200", s: "RM01", q: 20 },
-  { m: "RM-PLC-S71",    p: "1200", s: "RM01", q: 2 },
-  { m: "RM-CONT-25A",   p: "1200", s: "RM01", q: 10 },
-  { m: "RM-WIRE-15",    p: "1200", s: "RM01", q: 1200 },
-  { m: "RM-TERM-BLK",   p: "1200", s: "RM01", q: 200 },
-  { m: "RM-TERM-BLK",   p: "1200", s: "BL01", q: 500 },
-];
+let STOCK = [];
 
 /* System status codes as they appear on a production order */
-const ORDER_STATUS = {
-  CRTD: { name: "Created, not yet released", tone: "neutral" },
-  REL:  { name: "Released to the shop floor", tone: "go" },
-  PRT:  { name: "Shop papers printed", tone: "neutral" },
-  MSPT: { name: "Missing parts", tone: "stop" },
-  PCNF: { name: "Partially confirmed", tone: "signal" },
-  CNF:  { name: "Confirmed", tone: "signal" },
-  PDLV: { name: "Partially delivered", tone: "signal" },
-  DLV:  { name: "Delivered", tone: "go" },
-  GMPS: { name: "Goods movement posted", tone: "neutral" },
-  TECO: { name: "Technically completed", tone: "neutral" },
-};
+let ORDER_STATUS = {};
 
 /* Open production orders competing for the same components */
-const PROD_ORDERS = [
-  { order: "PRD-1000234", wc: "ASSY-A", hoursPer: 6.5, plant: "1000", material: "FG-PUMP-100", type: "PP01", mrp: "P01",
-    qty: 10, delivered: 0, confirmed: 4,
-    createdOffset: -18, startOffset: -2, finishOffset: 3,
-    mode: "MRP", createdBy: "MRP run 20 Aug",
-    status: ["REL", "PRT", "PCNF", "MSPT"] },
-
-  { order: "PRD-1000239", wc: "ASSY-A", hoursPer: 6.5, plant: "1000", material: "FG-PUMP-100", type: "PP01", mrp: "P01",
-    qty: 6, delivered: 0, confirmed: 0,
-    createdOffset: -11, startOffset: 1, finishOffset: 5,
-    mode: "MRP", createdBy: "MRP run 27 Aug",
-    status: ["REL", "PRT"] },
-
-  { order: "PRD-1000241", wc: "MACH-01", hoursPer: 1.2, plant: "1000", material: "SA-HOUSING-10", type: "PP01", mrp: "P01",
-    qty: 48, delivered: 48, confirmed: 48,
-    createdOffset: -16, startOffset: -8, finishOffset: -2,
-    mode: "MRP", createdBy: "MRP run 22 Aug",
-    status: ["REL", "CNF", "DLV", "GMPS", "TECO"] },
-
-  { order: "PRD-1000255", wc: "MACH-01", hoursPer: 1.8, plant: "1000", material: "SA-IMPELLER-25", type: "PP01", mrp: "P01",
-    qty: 10, delivered: 0, confirmed: 0,
-    createdOffset: -4, startOffset: 18, finishOffset: 22,
-    mode: "MRP", createdBy: "MRP run 03 Sep",
-    status: ["CRTD"] },
-
-  { order: "PRD-1000260", wc: "ASSY-A", hoursPer: 6.5, plant: "1000", material: "FG-PUMP-100", type: "PP01", mrp: "P01",
-    qty: 6, delivered: 0, confirmed: 0,
-    createdOffset: -7, startOffset: 0, finishOffset: 4,
-    mode: "MRP", createdBy: "MRP run 31 Aug",
-    status: ["REL", "PRT", "MSPT"] },
-
-  { order: "PRD-1100045", wc: "GEAR-01", hoursPer: 9, plant: "1100", material: "FG-GEAR-200", type: "PP01", mrp: "P01",
-    qty: 15, delivered: 15, confirmed: 15,
-    createdOffset: -19, startOffset: -9, finishOffset: -5,
-    mode: "MRP", createdBy: "MRP run 19 Aug",
-    status: ["REL", "CNF", "DLV", "GMPS", "TECO"] },
-
-  { order: "PRD-1200088", wc: "PANEL-01", hoursPer: 14, plant: "1200", material: "FG-CTRL-300", type: "PP01", mrp: "P02",
-    qty: 6, delivered: 0, confirmed: 0,
-    createdOffset: -10, startOffset: 2, finishOffset: 6,
-    mode: "MRP", createdBy: "MRP run 28 Aug",
-    status: ["REL", "PRT", "MSPT"] },
-
-  { order: "PRD-1200091", wc: "PANEL-01", hoursPer: 14, plant: "1200", material: "FG-CTRL-300", type: "PP01", mrp: "P02",
-    qty: 5, delivered: 0, confirmed: 0,
-    createdOffset: -3, startOffset: 6, finishOffset: 10,
-    mode: "Manual", createdBy: "K. Raman",
-    status: ["CRTD"] },
-];
+let PROD_ORDERS = [];
 
 /* MRP plant data — MARC. Safety stock is what the projected stock line is measured against. */
-const MRP_DATA = [
-  { m: "FG-PUMP-100", p: "1000", marginKey: "001", safety: 10, reorder: 15, mrpType: "PD", lotSize: "EX" },
-  { m: "FG-PUMP-200", p: "1000", marginKey: "002", safety: 4, reorder: 6, mrpType: "PD", lotSize: "EX" },
-  { m: "FG-GEAR-200", p: "1100", marginKey: "001", safety: 8, reorder: 12, mrpType: "PD", lotSize: "EX" },
-  { m: "FG-CTRL-300", p: "1200", marginKey: "002", safety: 3, reorder: 5, mrpType: "PD", lotSize: "EX" },
-  { m: "SA-HOUSING-10", p: "1000", safety: 10, reorder: 15, mrpType: "PD", lotSize: "FX" },
-  { m: "SA-ROTOR-20", p: "1000", safety: 6, reorder: 10, mrpType: "PD", lotSize: "FX" },
-  { m: "RM-BEAR-6204", p: "1000", safety: 60, reorder: 100, mrpType: "VB", lotSize: "HB" },
-  { m: "RM-SEAL-014", p: "1000", safety: 40, reorder: 80, mrpType: "VB", lotSize: "HB" },
-  { m: "RM-GASKET-88", p: "1000", safety: 50, reorder: 90, mrpType: "VB", lotSize: "HB" },
-  { m: "RM-VANE-06", p: "1000", safety: 150, reorder: 250, mrpType: "VB", lotSize: "HB" },
-  { m: "RM-PLC-S71", p: "1200", safety: 5, reorder: 8, mrpType: "PD", lotSize: "EX" },
-  { m: "RM-CONT-25A", p: "1200", safety: 30, reorder: 50, mrpType: "VB", lotSize: "HB" },
-];
+let MRP_DATA = [];
 const safetyOf = (m, p) => (MRP_DATA.find((r) => r.m === m && r.p === p) || {}).safety || 0;
 const mrpDataOf = (m, p) => MRP_DATA.find((r) => r.m === m && r.p === p) || null;
 const marginKeyOf = (m, p) => (mrpDataOf(m, p) || {}).marginKey || "001";
 
 /* Sales order schedule lines — VBAP / VBEP. This is the demand the plant is judged on. */
-const SALES_ORDERS = [
-  { doc: "45000871", item: "10", route: "IN0004", shipPoint: "1000", transit: 3, customer: "Shree Hydraulics, Nagpur", soldTo: "C-10041", m: "FG-PUMP-100", p: "1000", qty: 24, confirmed: 24, reqOffset: 12 },
-  { doc: "45000874", item: "20", route: "IN0007", shipPoint: "1000", transit: 5, customer: "Metro Equipment, Delhi", soldTo: "C-10088", m: "FG-PUMP-100", p: "1000", qty: 18, confirmed: 18, reqOffset: 19 },
-  { doc: "45000878", item: "10", route: "IN0003", shipPoint: "1000", transit: 2, customer: "Kishore Distributors, Surat", soldTo: "C-10112", m: "FG-PUMP-100", p: "1000", qty: 15, confirmed: 10, reqOffset: 26 },
-  { doc: "45000880", item: "10", route: "IN0002", shipPoint: "1000", transit: 2, customer: "Deccan Machine Tools, Hubli", soldTo: "C-10150", m: "FG-PUMP-200", p: "1000", qty: 8, confirmed: 8, reqOffset: 20 },
-  { doc: "45000883", item: "30", route: "IN0004", shipPoint: "1000", transit: 3, customer: "Shree Hydraulics, Nagpur", soldTo: "C-10041", m: "FG-PUMP-200", p: "1000", qty: 6, confirmed: 6, reqOffset: 33 },
-  { doc: "45000886", item: "10", route: "IN0001", shipPoint: "1100", transit: 1, customer: "Western Gears, Kolhapur", soldTo: "C-10203", m: "FG-GEAR-200", p: "1100", qty: 20, confirmed: 20, reqOffset: 16 },
-  { doc: "45000889", item: "20", route: "IN0007", shipPoint: "1100", transit: 5, customer: "Metro Equipment, Delhi", soldTo: "C-10088", m: "FG-GEAR-200", p: "1100", qty: 14, confirmed: 14, reqOffset: 30 },
-  { doc: "45000892", item: "10", route: "IN0010", shipPoint: "1200", transit: 1, customer: "Coromandel Controls, Chennai", soldTo: "C-10310", m: "FG-CTRL-300", p: "1200", qty: 10, confirmed: 6, reqOffset: 18 },
-  { doc: "45000895", item: "10", route: "IN0011", shipPoint: "1200", transit: 2, customer: "Southern Switchgear, Hosur", soldTo: "C-10344", m: "FG-CTRL-300", p: "1200", qty: 8, confirmed: 0, reqOffset: 25 },
-  { doc: "45000898", item: "20", route: "IN0010", shipPoint: "1200", transit: 1, customer: "Coromandel Controls, Chennai", soldTo: "C-10310", m: "FG-CTRL-300", p: "1200", qty: 6, confirmed: 0, reqOffset: 40 },
-];
+let SALES_ORDERS = [];
 
 /* Shipping points — TVST. Loading and pick/pack time sit between the plant and the truck. */
-const SHIP_POINTS = [
-  { id: "1000", desc: "Pune despatch", plant: "1000", pickPack: 1, loading: 1 },
-  { id: "1100", desc: "Chakan despatch", plant: "1100", pickPack: 1, loading: 1 },
-  { id: "1200", desc: "Chennai despatch", plant: "1200", pickPack: 2, loading: 1 },
-];
+let SHIP_POINTS = [];
 
 /* Scheduling margin keys — T436A, assigned on MARC-SFCPF. All values in working days. */
-const SCHED_MARGIN = [
-  { key: "001", desc: "Standard assembly", floatBefore: 1, floatAfter: 2, opening: 5 },
-  { key: "002", desc: "Long lead assembly", floatBefore: 2, floatAfter: 3, opening: 10 },
-  { key: "003", desc: "Fast turnaround", floatBefore: 0, floatAfter: 1, opening: 3 },
-];
+let SCHED_MARGIN = [];
 const marginOf = (key) => SCHED_MARGIN.find((m) => m.key === key) || SCHED_MARGIN[0];
 
 /* Planned independent requirements — PBIM / PBED. Forecast that real orders consume. */
-const PIR = [
-  { m: "FG-PUMP-100", p: "1000", version: "00", offset: 21, qty: 12, withdrawn: 4 },
-  { m: "FG-PUMP-100", p: "1000", version: "00", offset: 35, qty: 12, withdrawn: 0 },
-  { m: "FG-PUMP-200", p: "1000", version: "00", offset: 28, qty: 5, withdrawn: 0 },
-  { m: "FG-GEAR-200", p: "1100", version: "00", offset: 24, qty: 10, withdrawn: 2 },
-  { m: "FG-GEAR-200", p: "1100", version: "00", offset: 38, qty: 10, withdrawn: 0 },
-  { m: "FG-CTRL-300", p: "1200", version: "00", offset: 31, qty: 6, withdrawn: 0 },
-];
+let PIR = [];
 
 /* Planned orders — PLAF. Not yet converted, and deleted by the next MRP run unless firmed. */
-const PLANNED_ORDERS = [
-  { order: "0000123456", m: "FG-PUMP-100", p: "1000", qty: 20, startOffset: 8, finishOffset: 17, firmed: false, wc: "ASSY-A", hoursPer: 6.5, opening: -2 },
-  { order: "0000123461", m: "FG-PUMP-100", p: "1000", qty: 20, startOffset: 22, finishOffset: 31, firmed: false, wc: "ASSY-A", hoursPer: 6.5, opening: 12 },
-  { order: "0000123470", m: "FG-PUMP-200", p: "1000", qty: 10, startOffset: 15, finishOffset: 26, firmed: true, wc: "ASSY-A", hoursPer: 11, opening: 4 },
-  { order: "0000123488", m: "FG-GEAR-200", p: "1100", qty: 18, startOffset: 11, finishOffset: 20, firmed: false, wc: "GEAR-01", hoursPer: 9, opening: 2 },
-  { order: "0000123495", m: "FG-CTRL-300", p: "1200", qty: 8, startOffset: 19, finishOffset: 33, firmed: false, wc: "PANEL-01", hoursPer: 14, opening: 5 },
-  { order: "0000123502", m: "SA-ROTOR-20", p: "1000", qty: 30, startOffset: 9, finishOffset: 16, firmed: false, wc: "MACH-01", hoursPer: 1.5, opening: 3 },
-];
+let PLANNED_ORDERS = [];
 
 /* Work centres and available capacity — CRHD / KAKO. Hours per week after utilisation. */
-const WORK_CENTRES = [
-  { id: "ASSY-A", desc: "Pump assembly line A", plant: "1000", shifts: 2, grossPerWeek: 400, util: 0.85 },
-  { id: "ASSY-B", desc: "Pump assembly line B", plant: "1000", shifts: 1, grossPerWeek: 200, util: 0.85 },
-  { id: "MACH-01", desc: "CNC machining cell", plant: "1000", shifts: 2, grossPerWeek: 400, util: 0.80 },
-  { id: "TEST-01", desc: "Pump test bench", plant: "1000", shifts: 1, grossPerWeek: 160, util: 0.90 },
-  { id: "GEAR-01", desc: "Gear line 1", plant: "1100", shifts: 2, grossPerWeek: 320, util: 0.85 },
-  { id: "GEAR-02", desc: "Gear line 2", plant: "1100", shifts: 1, grossPerWeek: 200, util: 0.85 },
-  { id: "PANEL-01", desc: "Panel bench 1", plant: "1200", shifts: 1, grossPerWeek: 160, util: 0.90 },
-  { id: "PANEL-02", desc: "Panel bench 2", plant: "1200", shifts: 1, grossPerWeek: 160, util: 0.90 },
-];
+let WORK_CENTRES = [];
 const wcCapacity = (w) => Math.round(w.grossPerWeek * w.util);
 
 /* Batch stock — MCHB with shelf life and status from MCHA. Only materials flagged
    batch managed appear here, and their batch quantities must add up to the storage
    location stock above or availability will disagree with MMBE. */
-const BATCH_MANAGED = new Set(["RM-SEAL-014", "RM-GASKET-88", "RM-OIL-SAE40", "RM-VANE-06", "RM-CAST-001"]);
+let BATCH_MANAGED = new Set();
 
-const BATCHES = [
-  // RM-SEAL-014 @1000 — RM01 30, QI01 40
-  { m: "RM-SEAL-014", p: "1000", sloc: "RM01", batch: "B2508-014A", qty: 18, status: "unrestricted", mfgOffset: -390, expOffset: 160, vendorBatch: "NBR-8841" },
-  { m: "RM-SEAL-014", p: "1000", sloc: "RM01", batch: "B2601-014C", qty: 12, status: "unrestricted", mfgOffset: -240, expOffset: 310, vendorBatch: "NBR-9102" },
-  { m: "RM-SEAL-014", p: "1000", sloc: "QI01", batch: "B2606-014F", qty: 40, status: "restricted", mfgOffset: -60, expOffset: 490, vendorBatch: "NBR-9455" },
-  // RM-GASKET-88 @1000 — RM01 20
-  { m: "RM-GASKET-88", p: "1000", sloc: "RM01", batch: "B2503-088A", qty: 8, status: "unrestricted", mfgOffset: -560, expOffset: -20, vendorBatch: "GR-2231" },
-  { m: "RM-GASKET-88", p: "1000", sloc: "RM01", batch: "B2602-088D", qty: 12, status: "unrestricted", mfgOffset: -210, expOffset: 340, vendorBatch: "GR-2670" },
-  // RM-OIL-SAE40 @1000 — RM01 70
-  { m: "RM-OIL-SAE40", p: "1000", sloc: "RM01", batch: "B2510-040B", qty: 25, status: "unrestricted", mfgOffset: -330, expOffset: 35, vendorBatch: "IL-4402" },
-  { m: "RM-OIL-SAE40", p: "1000", sloc: "RM01", batch: "B2605-040E", qty: 45, status: "unrestricted", mfgOffset: -95, expOffset: 270, vendorBatch: "IL-4781" },
-  // RM-VANE-06 @1000 — RM01 90, QI01 200
-  { m: "RM-VANE-06", p: "1000", sloc: "RM01", batch: "B2604-006A", qty: 55, status: "unrestricted", mfgOffset: -120, expOffset: null, vendorBatch: "VT-1180" },
-  { m: "RM-VANE-06", p: "1000", sloc: "RM01", batch: "B2607-006B", qty: 35, status: "unrestricted", mfgOffset: -45, expOffset: null, vendorBatch: "VT-1244" },
-  { m: "RM-VANE-06", p: "1000", sloc: "QI01", batch: "B2608-006C", qty: 200, status: "restricted", mfgOffset: -20, expOffset: null, vendorBatch: "VT-1290" },
-  // Chakan 1100 — a batch managed material must have every stock line batched
-  { m: "RM-SEAL-014", p: "1100", sloc: "RM01", batch: "B2602-014J", qty: 120, status: "unrestricted", mfgOffset: -200, expOffset: 350, vendorBatch: "NBR-9188" },
-  { m: "RM-SEAL-014", p: "1100", sloc: "RM01", batch: "B2607-014K", qty: 80, status: "unrestricted", mfgOffset: -50, expOffset: 500, vendorBatch: "NBR-9501" },
-  { m: "RM-OIL-SAE40", p: "1100", sloc: "RM01", batch: "B2604-040H", qty: 80, status: "unrestricted", mfgOffset: -110, expOffset: 255, vendorBatch: "IL-4699" },
-  { m: "RM-GASKET-88", p: "1100", sloc: "BL01", batch: "B2504-088B", qty: 150, status: "restricted", mfgOffset: -520, expOffset: 40, vendorBatch: "GR-2299" },
-  // RM-CAST-001 @1000 — RM01 45
-  { m: "RM-CAST-001", p: "1000", sloc: "RM01", batch: "B2512-001A", qty: 20, status: "restricted", mfgOffset: -280, expOffset: null, vendorBatch: "SF-7701" },
-  { m: "RM-CAST-001", p: "1000", sloc: "RM01", batch: "B2606-001B", qty: 25, status: "unrestricted", mfgOffset: -70, expOffset: null, vendorBatch: "SF-8033" },
-];
+let BATCHES = [];
 
 const batchKey = (b) => `${b.p}|${b.m}|${b.sloc}|${b.batch}`;
 
@@ -523,237 +151,329 @@ function defaultBatchExclusions() {
 /* Consumption history — MVER. Twelve monthly periods, oldest first, ending with the
    current month. "total" is everything issued; "unplanned" is the part issued without a
    production order behind it, which is the number worth watching. */
-const CONSUMPTION = [
-  { m: "RM-BEAR-6204", p: "1000", total: [186, 172, 205, 198, 221, 194, 210, 188, 202, 215, 196, 118], unplanned: [4, 2, 6, 3, 5, 2, 4, 3, 2, 6, 3, 2] },
-  { m: "RM-SEAL-014",  p: "1000", total: [96, 104, 112, 118, 126, 131, 140, 148, 155, 162, 171, 96], unplanned: [2, 3, 2, 4, 3, 2, 5, 3, 4, 3, 5, 2] },
-  { m: "RM-GASKET-88", p: "1000", total: [42, 168, 12, 195, 28, 8, 212, 34, 15, 188, 22, 96], unplanned: [1, 6, 0, 8, 1, 0, 9, 2, 0, 7, 1, 4] },
-  { m: "RM-BOLT-M8",   p: "1000", total: [1820, 1760, 1910, 1845, 2010, 1880, 1925, 1790, 1860, 1975, 1830, 1120], unplanned: [96, 88, 142, 104, 168, 112, 155, 98, 126, 149, 108, 74] },
-  { m: "RM-VANE-06",   p: "1000", total: [620, 655, 710, 690, 745, 702, 768, 725, 780, 812, 795, 470], unplanned: [78, 92, 116, 104, 138, 121, 152, 134, 161, 178, 172, 98] },
-  { m: "RM-CAST-001",  p: "1000", total: [88, 82, 95, 91, 102, 94, 98, 86, 93, 101, 90, 54], unplanned: [2, 1, 3, 2, 4, 2, 3, 1, 2, 3, 2, 1] },
-  { m: "RM-SHAFT-220", p: "1000", total: [84, 79, 92, 88, 98, 90, 95, 83, 90, 97, 87, 52], unplanned: [1, 1, 2, 1, 2, 1, 2, 1, 1, 2, 1, 1] },
-  { m: "RM-OIL-SAE40", p: "1000", total: [128, 121, 140, 134, 149, 138, 145, 127, 137, 148, 133, 79], unplanned: [8, 6, 11, 9, 12, 10, 11, 7, 9, 12, 8, 5] },
-  { m: "RM-FILTER-25", p: "1000", total: [84, 79, 92, 88, 98, 90, 95, 83, 90, 97, 87, 52], unplanned: [0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0] },
-  { m: "RM-IMP-BLANK-05", p: "1000", total: [86, 80, 94, 89, 100, 92, 97, 85, 92, 99, 89, 53], unplanned: [2, 1, 3, 2, 3, 2, 2, 1, 2, 3, 2, 1] },
-  { m: "RM-PLATE-ID",  p: "1000", total: [170, 161, 186, 178, 198, 184, 192, 169, 182, 196, 177, 105], unplanned: [3, 2, 4, 3, 4, 3, 4, 2, 3, 4, 3, 2] },
-  { m: "RM-KEY-08",    p: "1000", total: [88, 40, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0], unplanned: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-  { m: "RM-GEAR-Z28",  p: "1100", total: [58, 62, 55, 68, 61, 70, 64, 59, 66, 72, 63, 38], unplanned: [1, 2, 1, 3, 1, 2, 2, 1, 2, 3, 1, 1] },
-  { m: "RM-CAST-002",  p: "1100", total: [30, 32, 28, 35, 31, 36, 33, 30, 34, 37, 32, 19], unplanned: [1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0] },
-  { m: "RM-PLC-S71",   p: "1200", total: [0, 8, 0, 0, 11, 0, 0, 9, 0, 0, 12, 0], unplanned: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-  { m: "RM-CONT-25A",  p: "1200", total: [36, 33, 39, 30, 42, 36, 33, 39, 36, 30, 42, 21], unplanned: [1, 0, 1, 0, 2, 1, 0, 1, 1, 0, 2, 0] },
-  { m: "RM-TERM-BLK",  p: "1200", total: [480, 440, 520, 400, 560, 480, 440, 520, 480, 400, 560, 280], unplanned: [12, 8, 22, 10, 26, 14, 9, 21, 12, 8, 24, 6] },
-  { m: "RM-WIRE-15",   p: "1200", total: [300, 275, 325, 250, 350, 300, 275, 325, 300, 250, 350, 175], unplanned: [18, 14, 24, 12, 28, 19, 15, 23, 17, 11, 27, 9] },
-  { m: "RM-ENCL-400",  p: "1200", total: [22, 20, 19, 17, 16, 15, 14, 12, 11, 10, 9, 5], unplanned: [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0] },
-];
+let CONSUMPTION = [];
 
 /* Outbound deliveries — LIKP / LIPS. Goods issue posted means it left the plant. */
-const DELIVERIES = [
-  { doc: "80001201", item: "10", m: "FG-PUMP-100", p: "1000", qty: 14, offset: -25, so: "45000840", customer: "Shree Hydraulics, Nagpur", gi: true },
-  { doc: "80001208", item: "10", m: "FG-PUMP-100", p: "1000", qty: 10, offset: -18, so: "45000846", customer: "Metro Equipment, Delhi", gi: true },
-  { doc: "80001215", item: "10", m: "FG-GEAR-200", p: "1100", qty: 15, offset: -16, so: "45000851", customer: "Western Gears, Kolhapur", gi: true },
-  { doc: "80001222", item: "20", m: "FG-PUMP-200", p: "1000", qty: 5, offset: -11, so: "45000855", customer: "Deccan Machine Tools, Hubli", gi: true },
-  { doc: "80001229", item: "10", m: "FG-CTRL-300", p: "1200", qty: 7, offset: -9, so: "45000858", customer: "Coromandel Controls, Chennai", gi: true },
-  { doc: "80001236", item: "10", m: "FG-PUMP-100", p: "1000", qty: 12, offset: -4, so: "45000864", customer: "Kishore Distributors, Surat", gi: true },
-  { doc: "80001243", item: "10", m: "FG-GEAR-200", p: "1100", qty: 8, offset: -2, so: "45000866", customer: "Metro Equipment, Delhi", gi: true },
-  { doc: "80001250", item: "10", m: "FG-PUMP-100", p: "1000", qty: 9, offset: 2, so: "45000869", customer: "Shree Hydraulics, Nagpur", gi: false },
-  { doc: "80001257", item: "10", m: "FG-CTRL-300", p: "1200", qty: 4, offset: 4, so: "45000870", customer: "Southern Switchgear, Hosur", gi: false },
-];
+let DELIVERIES = [];
 
-const ORDER_BY_ID = Object.fromEntries(PROD_ORDERS.map((o) => [o.order, o]));
+let ORDER_BY_ID = {};
 const isReleased = (id) => {
   const o = ORDER_BY_ID[id];
   return o ? o.status.includes("REL") : true;
 };
 
 /* Movement type catalogue */
-const MVT_TYPES = {
-  "101": { text: "Goods receipt", effect: "in" },
-  "261": { text: "Goods issue for order", effect: "out" },
-  "262": { text: "Reversal of goods issue", effect: "in" },
-  "311": { text: "Transfer between storage locations", effect: "move" },
-  "541": { text: "Transfer to subcontractor", effect: "out" },
-  "543": { text: "Consumption at subcontractor", effect: "out" },
-  "601": { text: "Goods issue for delivery", effect: "out" },
-};
+let MVT_TYPES = {};
 
 /* Posted component movements. offset is days from today. */
-const GOODS_MVT = [
-  // ---- Pune 1000
-  { doc: "4900012090", item: "1", p: "1000", offset: -22, mvt: "101", ref: "4500011505", refType: "PO", m: "RM-FILTER-25", qty: 60, sloc: "RM01", user: "S. Jadhav" },
-  { doc: "4900012100", item: "1", p: "1000", offset: -30, mvt: "101", ref: "4500011188", refType: "PO", m: "RM-BEAR-6204", qty: 160, sloc: "RM01", user: "S. Jadhav" },
-  { doc: "4900012120", item: "1", p: "1000", offset: -25, mvt: "541", ref: "4500011688", refType: "SC", m: "RM-IMP-BLANK-05", qty: 16, sloc: "RM01", user: "D. Rane" },
-  { doc: "4900012121", item: "1", p: "1000", offset: -25, mvt: "541", ref: "4500011688", refType: "SC", m: "RM-VANE-06", qty: 101, sloc: "RM01", user: "D. Rane" },
-  { doc: "4900012141", item: "1", p: "1000", offset: -14, mvt: "541", ref: "4500011720", refType: "SC", m: "RM-CAST-001", qty: 26, sloc: "RM01", user: "D. Rane" },
-  { doc: "4900012142", item: "1", p: "1000", offset: -14, mvt: "541", ref: "4500011720", refType: "SC", m: "RM-BOLT-M8", qty: 208, sloc: "RM01", user: "D. Rane" },
-  { doc: "4900012180", item: "1", p: "1000", offset: -6, mvt: "261", ref: "PRD-1000241", refType: "PRD", m: "RM-BOLT-M8", qty: 400, sloc: "RM01", user: "S. Jadhav" },
-  { doc: "4900012181", item: "1", p: "1000", offset: -6, mvt: "101", ref: "PRD-1000241", refType: "PRD", m: "SA-HOUSING-10", qty: 48, sloc: "PR01", user: "S. Jadhav" },
-  { doc: "4900012194", item: "1", p: "1000", offset: -4, mvt: "261", ref: "PRD-1000234", refType: "PRD", m: "RM-BEAR-6204", qty: 12, sloc: "RM01", user: "M. Shinde" },
-  { doc: "4900012196", item: "1", p: "1000", offset: -4, mvt: "262", ref: "PRD-1000234", refType: "PRD", m: "RM-BEAR-6204", qty: 2, sloc: "RM01", user: "M. Shinde" },
-  { doc: "4900012205", item: "1", p: "1000", offset: -3, mvt: "261", ref: "PRD-1000239", refType: "PRD", m: "RM-SEAL-014", qty: 7, sloc: "RM01", user: "M. Shinde" },
-  { doc: "4900012230", item: "1", p: "1000", offset: -6, mvt: "541", ref: "4500011745", refType: "SC", m: "RM-SHAFT-220", qty: 20, sloc: "RM01", user: "D. Rane" },
-  { doc: "4900012231", item: "1", p: "1000", offset: -6, mvt: "541", ref: "4500011745", refType: "SC", m: "RM-BEAR-6204", qty: 40, sloc: "RM01", user: "D. Rane" },
-  { doc: "4900012232", item: "1", p: "1000", offset: -6, mvt: "541", ref: "4500011745", refType: "SC", m: "RM-KEY-08", qty: 21, sloc: "RM01", user: "D. Rane" },
-  { doc: "4900012250", item: "1", p: "1000", offset: -2, mvt: "543", ref: "4500011720", refType: "SC", m: "RM-CAST-001", qty: 20, sloc: "", user: "D. Rane" },
-  { doc: "4900012251", item: "1", p: "1000", offset: -2, mvt: "543", ref: "4500011720", refType: "SC", m: "RM-BOLT-M8", qty: 165, sloc: "", user: "D. Rane" },
-  { doc: "4900012252", item: "1", p: "1000", offset: -2, mvt: "101", ref: "4500011720", refType: "SC", m: "SA-HOUSING-10", qty: 20, sloc: "PR01", user: "D. Rane" },
-  { doc: "4900012258", item: "1", p: "1000", offset: -1, mvt: "101", ref: "4500011399", refType: "PO", m: "RM-OIL-SAE40", qty: 200, sloc: "RM01", user: "S. Jadhav" },
-
-  { doc: "4900011860", item: "1", p: "1000", offset: -26, mvt: "101", ref: "PRD-1000198", refType: "PRD", m: "FG-PUMP-100", qty: 16, sloc: "PR01", user: "S. Jadhav" },
-  { doc: "4900011905", item: "1", p: "1000", offset: -19, mvt: "101", ref: "PRD-1000212", refType: "PRD", m: "FG-PUMP-100", qty: 12, sloc: "PR01", user: "S. Jadhav" },
-  { doc: "4900011948", item: "1", p: "1000", offset: -12, mvt: "101", ref: "PRD-1000221", refType: "PRD", m: "FG-PUMP-200", qty: 6, sloc: "PR01", user: "M. Shinde" },
-  { doc: "4900012004", item: "1", p: "1000", offset: -5, mvt: "101", ref: "PRD-1000229", refType: "PRD", m: "FG-PUMP-100", qty: 14, sloc: "PR01", user: "S. Jadhav" },
-  { doc: "4900011865", item: "1", p: "1000", offset: -25, mvt: "601", ref: "80001201", refType: "SD", m: "FG-PUMP-100", qty: 14, sloc: "PR01", user: "A. Bhosale" },
-  { doc: "4900011910", item: "1", p: "1000", offset: -18, mvt: "601", ref: "80001208", refType: "SD", m: "FG-PUMP-100", qty: 10, sloc: "PR01", user: "A. Bhosale" },
-  { doc: "4900011960", item: "1", p: "1000", offset: -11, mvt: "601", ref: "80001222", refType: "SD", m: "FG-PUMP-200", qty: 5, sloc: "PR01", user: "A. Bhosale" },
-  { doc: "4900012020", item: "1", p: "1000", offset: -4, mvt: "601", ref: "80001236", refType: "SD", m: "FG-PUMP-100", qty: 12, sloc: "PR01", user: "A. Bhosale" },
-
-  // ---- Chakan 1100
-  { doc: "4900011950", item: "1", p: "1100", offset: -30, mvt: "541", ref: "4500011540", refType: "SC", m: "RM-CAST-002", qty: 41, sloc: "RM01", user: "P. More" },
-  { doc: "4900011951", item: "1", p: "1100", offset: -30, mvt: "541", ref: "4500011540", refType: "SC", m: "RM-BOLT-M8", qty: 492, sloc: "RM01", user: "P. More" },
-  { doc: "4900011975", item: "1", p: "1100", offset: -6, mvt: "543", ref: "4500011540", refType: "SC", m: "RM-CAST-002", qty: 41, sloc: "", user: "P. More" },
-  { doc: "4900011977", item: "1", p: "1100", offset: -6, mvt: "543", ref: "4500011540", refType: "SC", m: "RM-BOLT-M8", qty: 492, sloc: "", user: "P. More" },
-  { doc: "4900011976", item: "1", p: "1100", offset: -6, mvt: "101", ref: "4500011540", refType: "SC", m: "SA-CASE-30", qty: 40, sloc: "PR01", user: "P. More" },
-  { doc: "4900011990", item: "1", p: "1100", offset: -5, mvt: "261", ref: "PRD-1100045", refType: "PRD", m: "RM-GEAR-Z28", qty: 30, sloc: "RM01", user: "P. More" },
-  { doc: "4900011991", item: "1", p: "1100", offset: -5, mvt: "101", ref: "PRD-1100045", refType: "PRD", m: "FG-GEAR-200", qty: 15, sloc: "PR01", user: "P. More" },
-
-  { doc: "4900011930", item: "1", p: "1100", offset: -16, mvt: "601", ref: "80001215", refType: "SD", m: "FG-GEAR-200", qty: 15, sloc: "PR01", user: "P. More" },
-  { doc: "4900012040", item: "1", p: "1100", offset: -2, mvt: "601", ref: "80001243", refType: "SD", m: "FG-GEAR-200", qty: 8, sloc: "PR01", user: "P. More" },
-
-  // ---- Chennai 1200
-  { doc: "4900011975", item: "1", p: "1200", offset: -14, mvt: "101", ref: "PRD-1200071", refType: "PRD", m: "FG-CTRL-300", qty: 9, sloc: "PR01", user: "K. Raman" },
-  { doc: "4900011992", item: "1", p: "1200", offset: -9, mvt: "601", ref: "80001229", refType: "SD", m: "FG-CTRL-300", qty: 7, sloc: "PR01", user: "K. Raman" },
-  { doc: "4900012310", item: "1", p: "1200", offset: -8, mvt: "101", ref: "4500011477", refType: "PO", m: "RM-TERM-BLK", qty: 400, sloc: "RM01", user: "K. Raman" },
-];
+let GOODS_MVT = [];
 
 /* Open reservations from earlier MRP runs and released orders.
    Open quantity = required − withdrawn, and nothing is open once final issue is set. */
-const RESERVATIONS = [
-  { id: "0000045201/0010", m: "RM-CAST-001", p: "1000", order: "PRD-1000260", type: "Production order", reqQty: 20, withdrawn: 0, offset: 4, finalIssue: false },
-  { id: "0000045188/0030", m: "RM-BEAR-6204", p: "1000", order: "PRD-1000234", type: "Production order", reqQty: 20, withdrawn: 10, offset: 3, finalIssue: false },
-  { id: "0000045190/0020", m: "RM-SEAL-014", p: "1000", order: "PRD-1000239", type: "Production order", reqQty: 12, withdrawn: 7, offset: 5, finalIssue: false },
-  { id: "0000045176/0040", m: "RM-BOLT-M8", p: "1000", order: "PRD-1000241", type: "Production order", reqQty: 400, withdrawn: 400, offset: -2, finalIssue: true },
-  { id: "0000045233/0010", m: "RM-VANE-06", p: "1000", order: "PRD-1000255", type: "Production order", reqQty: 60, withdrawn: 0, offset: 22, finalIssue: false },
-  { id: "0000045201/0020", m: "SA-HOUSING-10", p: "1000", order: "PRD-1000260", type: "Production order", reqQty: 6, withdrawn: 0, offset: 4, finalIssue: false },
-  { id: "0000045301/0010", m: "RM-WIRE-15", p: "1200", order: "PRD-1200088", type: "Production order", reqQty: 150, withdrawn: 0, offset: 6, finalIssue: false },
-  { id: "0000045318/0010", m: "RM-CONT-25A", p: "1200", order: "PRD-1200091", type: "Production order", reqQty: 15, withdrawn: 0, offset: 8, finalIssue: false },
-  { id: "0000045310/0010", m: "RM-GEAR-Z28", p: "1100", order: "PRD-1100045", type: "Production order", reqQty: 30, withdrawn: 30, offset: -5, finalIssue: true },
-];
+let RESERVATIONS = [];
 
 /* Subcontracting orders. The vendor returns "material"; the components under "provided"
    are our stock physically sitting at the vendor (special stock O) — owned but not issuable
    at the plant until recalled. */
-const SUBCON = [
-  { doc: "4500011720", item: "10", plant: "1000",
-    vendor: "Shreeji Machining Works", vendorCode: "V-10620",
-    material: "SA-HOUSING-10", q: 25, received: 20,
-    createdOffset: -14, offset: 7, mode: "MRP", createdBy: "MRP run 24 Aug",
-    service: "Housing bore machining and facing",
-    provided: [
-      { code: "RM-CAST-001", qty: 26, consumed: 20 },
-      { code: "RM-BOLT-M8", qty: 208, consumed: 165 },
-    ] },
-
-  { doc: "4500011745", item: "10", plant: "1000",
-    vendor: "Precision Machining Works", vendorCode: "V-10655",
-    material: "SA-ROTOR-20", q: 20, received: 0,
-    createdOffset: -6, offset: 19, mode: "Manual", createdBy: "A. Kulkarni",
-    service: "Rotor balancing and shaft press fit",
-    provided: [
-      { code: "RM-SHAFT-220", qty: 20, consumed: 0 },
-      { code: "RM-BEAR-6204", qty: 40, consumed: 0 },
-      { code: "RM-KEY-08", qty: 21, consumed: 0 },
-    ] },
-
-  { doc: "4500011688", item: "20", plant: "1000",
-    vendor: "Aditya Engineering", vendorCode: "V-10702",
-    material: "SA-IMPELLER-25", q: 15, received: 0,
-    createdOffset: -25, offset: -4, mode: "Manual", createdBy: "S. Deshpande",
-    service: "Vane insertion and dynamic balancing",
-    provided: [
-      { code: "RM-IMP-BLANK-05", qty: 16, consumed: 0 },
-      { code: "RM-VANE-06", qty: 101, consumed: 0 },
-    ] },
-
-  { doc: "4500011540", item: "10", plant: "1100",
-    vendor: "Chakan Precision Tools", vendorCode: "V-11080",
-    material: "SA-CASE-30", q: 40, received: 40,
-    createdOffset: -30, offset: -6, mode: "MRP", createdBy: "MRP run 08 Aug",
-    service: "Gear case boring",
-    provided: [
-      { code: "RM-CAST-002", qty: 41, consumed: 41 },
-      { code: "RM-BOLT-M8", qty: 492, consumed: 492 },
-    ] },
-];
+let SUBCON = [];
 
 /* Open purchase orders and stock transfer orders.
    openQty = ordered − received. "pegged" records quantities a previous MRP run already
    assigned to other dependent requirements — that quantity is not free for this order. */
-const SUPPLY = [
-  { doc: "4500011234", item: "10", type: "PO", m: "RM-SHAFT-220", p: "1000",
-    vendor: "Sanghvi Forge Pvt Ltd", vendorCode: "V-10023",
-    q: 25, received: 0, createdOffset: -12, offset: 6,
-    mode: "MRP", createdBy: "MRP run 26 Aug",
-    pegged: [{ order: "PRD-1000234", qty: 8, run: "MRP run 04 Sep" }] },
+let SUPPLY = [];
 
-  { doc: "4500011290", item: "10", type: "PO", m: "RM-GASKET-88", p: "1000",
-    vendor: "Perfect Seals India", vendorCode: "V-10188",
-    q: 100, received: 0, createdOffset: -9, offset: 18,
-    mode: "MRP", createdBy: "MRP run 29 Aug",
-    pegged: [{ order: "PRD-1000239", qty: 45, run: "MRP run 04 Sep" }] },
+/* ============================================================
+   THE EXCEL DATABASE
 
-  { doc: "4700005512", item: "10", type: "STO", m: "RM-CAST-001", p: "1000",
-    vendor: "Plant 1100 Chakan", vendorCode: "1100",
-    q: 30, received: 0, createdOffset: -5, offset: 3,
-    mode: "MRP", createdBy: "MRP run 02 Sep",
-    pegged: [{ order: "PRD-1000260", qty: 20, run: "MRP run 04 Sep" }] },
+   Every table above starts empty. PP_Readiness_Database.xlsx, served
+   alongside this page, is the source of truth: edit it in Excel, reload the
+   page, and the dashboard follows. Nothing here hard codes the column
+   layout. The workbook carries a _Schema sheet saying which sheet holds
+   which dataset, which heading maps to which property, what type it is and
+   how the rows are put back together, so a column can be renamed or moved
+   in Excel without touching this file.
 
-  { doc: "4500011512", item: "20", type: "PO", m: "RM-VANE-06", p: "1000",
-    vendor: "Vane Tech Engineering", vendorCode: "V-10450",
-    q: 150, received: 0, createdOffset: -6, offset: 8,
-    mode: "MRP", createdBy: "MRP run 01 Sep",
-    pegged: [{ order: "PRD-1000255", qty: 120, run: "MRP run 04 Sep" }] },
+   Rebuild the workbook with tools\build-workbook.ps1.
+   ============================================================ */
 
-  { doc: "4500011188", item: "10", type: "PO", m: "RM-BEAR-6204", p: "1000",
-    vendor: "SKF India Ltd", vendorCode: "V-10002",
-    q: 200, received: 160, createdOffset: -34, offset: 16,
-    mode: "Manual", createdBy: "R. Patil",
-    pegged: [] },
+const WORKBOOK_FILE = "PP_Readiness_Database.xlsx";
+const SHEETJS_CDN = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
 
-  { doc: "4500011399", item: "10", type: "PO", m: "RM-OIL-SAE40", p: "1000",
-    vendor: "Indo Lubricants", vendorCode: "V-10310",
-    q: 400, received: 200, createdOffset: -20, offset: 12,
-    mode: "Manual", createdBy: "S. Deshpande",
-    pegged: [] },
+let DATA_SOURCE = { file: WORKBOOK_FILE, sheets: 0, rows: 0, loadedAt: null };
 
-  { doc: "4500011505", item: "30", type: "PO", m: "RM-FILTER-25", p: "1000",
-    vendor: "Hydac Filters India", vendorCode: "V-10501",
-    q: 60, received: 60, createdOffset: -25, offset: -3,
-    mode: "MRP", createdBy: "MRP run 13 Aug",
-    pegged: [] },
+/* The spreadsheet reader is a CDN global rather than an import, so that the
+   single file standalone build keeps working without a bundler. */
+function loadReader() {
+  return new Promise((resolve, reject) => {
+    if (typeof window !== "undefined" && window.XLSX) return resolve();
+    const existing = document.querySelector('script[data-pp-reader="1"]');
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", () => reject(new Error("The spreadsheet reader could not be loaded from the CDN. This page needs network access on first load.")));
+      return;
+    }
+    const tag = document.createElement("script");
+    tag.src = SHEETJS_CDN;
+    tag.async = true;
+    tag.setAttribute("data-pp-reader", "1");
+    tag.onload = () => resolve();
+    tag.onerror = () => reject(new Error("The spreadsheet reader could not be loaded from the CDN. This page needs network access on first load."));
+    document.head.appendChild(tag);
+  });
+}
 
-  { doc: "4500011601", item: "10", type: "PO", m: "RM-GEAR-Z28", p: "1100",
-    vendor: "Precision Gears Pune", vendorCode: "V-11002",
-    q: 300, received: 0, createdOffset: -3, offset: 20,
-    mode: "MRP", createdBy: "MRP run 04 Sep",
-    pegged: [] },
+/* Excel gives back whatever the cell happened to hold. Plant 1000 and version
+   0001 have to stay strings, an empty number cell has to stay null so the
+   "no expiry date" checks keep working, and a blank text cell reads as "". */
+function coerceCell(value, type) {
+  if (value === null || value === undefined || value === "") {
+    return type === "n" ? null : type === "b" ? false : "";
+  }
+  if (type === "n") {
+    const n = typeof value === "number" ? value : Number(String(value).trim());
+    return Number.isFinite(n) ? n : null;
+  }
+  if (type === "b") {
+    if (typeof value === "boolean") return value;
+    const s = String(value).trim().toLowerCase();
+    return s === "true" || s === "1" || s === "yes" || s === "y";
+  }
+  return typeof value === "string" ? value : String(value);
+}
 
-  { doc: "4500011455", item: "10", type: "PO", m: "RM-PLC-S71", p: "1200",
-    vendor: "Siemens India Pvt Ltd", vendorCode: "V-20011",
-    q: 15, received: 0, createdOffset: -40, offset: 30,
-    mode: "MRP", createdBy: "MRP run 29 Jul",
-    pegged: [{ order: "PRD-1200091", qty: 5, run: "MRP run 03 Sep" }] },
+function readSchema(wb) {
+  const ws = wb.Sheets["_Schema"];
+  if (!ws) throw new Error('The workbook has no "_Schema" sheet, so its layout cannot be read. Rebuild it with tools\\build-workbook.ps1.');
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: null, raw: true });
+  const bySheet = new Map();
+  for (const r of rows) {
+    const sheet = String(r.Sheet);
+    if (!bySheet.has(sheet)) {
+      bySheet.set(sheet, { sheet, dataset: String(r.Dataset), shape: String(r.Shape), cols: [] });
+    }
+    bySheet.get(sheet).cols.push({
+      ordinal: Number(r.Ordinal),
+      header: String(r.Header),
+      key: String(r.Key),
+      type: String(r.Type),
+    });
+  }
+  const specs = Array.from(bySheet.values());
+  for (const s of specs) s.cols.sort((a, b) => a.ordinal - b.ordinal);
+  return specs;
+}
 
-  { doc: "4500011460", item: "10", type: "PO", m: "RM-CONT-25A", p: "1200",
-    vendor: "Schneider Electric India", vendorCode: "V-20044",
-    q: 50, received: 0, createdOffset: -15, offset: 22,
-    mode: "MRP", createdBy: "MRP run 23 Aug",
-    pegged: [] },
+function readTable(wb, spec) {
+  const ws = wb.Sheets[spec.sheet];
+  if (!ws) throw new Error(`The workbook has no "${spec.sheet}" sheet, but _Schema says it should.`);
+  const raw = XLSX.utils.sheet_to_json(ws, { defval: null, raw: true });
+  const missing = spec.cols.filter((c) => raw.length && !(c.header in raw[0]));
+  if (missing.length) {
+    throw new Error(`Sheet "${spec.sheet}" is missing the column${missing.length > 1 ? "s" : ""} ${missing.map((c) => `"${c.header}"`).join(", ")}.`);
+  }
+  return raw.map((row) => {
+    const out = {};
+    for (const c of spec.cols) out[c.key] = coerceCell(row[c.header], c.type);
+    return out;
+  });
+}
 
-  { doc: "4500011477", item: "10", type: "PO", m: "RM-TERM-BLK", p: "1200",
-    vendor: "Phoenix Contact India", vendorCode: "V-20090",
-    q: 1000, received: 400, createdOffset: -18, offset: 14,
-    mode: "Manual", createdBy: "R. Krishnan",
-    pegged: [] },
-];
+/* Flat rows back into the shapes the rest of the file expects */
+function reshape(spec, rows) {
+  const first = spec.cols[0].key;
+  switch (spec.shape) {
+    case "list":
+      return rows.map((r) => r[first]);
+
+    case "dict": {
+      const out = {};
+      for (const r of rows) {
+        const value = {};
+        for (const c of spec.cols) if (c.key !== first) value[c.key] = r[c.key];
+        out[r[first]] = value;
+      }
+      return out;
+    }
+
+    case "transit": {
+      const out = {};
+      for (const r of rows) out[`${r.from}-${r.to}`] = r.days;
+      return out;
+    }
+
+    case "bom": {
+      const out = {};
+      for (const r of rows) {
+        if (!out[r.material]) out[r.material] = {};
+        if (!out[r.material][r.alt]) out[r.material][r.alt] = [];
+        out[r.material][r.alt].push({ code: r.code, qty: r.qty, scrap: r.scrap });
+      }
+      return out;
+    }
+
+    case "prodver": {
+      const out = {};
+      for (const r of rows) {
+        const v = {};
+        for (const c of spec.cols) if (c.key !== "material") v[c.key] = r[c.key];
+        if (!out[r.material]) out[r.material] = [];
+        out[r.material].push(v);
+      }
+      return out;
+    }
+
+    case "prodorders":
+      return rows.map((r) => ({ ...r, status: r.status ? r.status.split(/\s+/).filter(Boolean) : [] }));
+
+    case "consumption":
+      return rows.map((r) => {
+        const total = [];
+        const unplanned = [];
+        for (let i = 1; i <= 12; i++) {
+          total.push(r["t" + i]);
+          unplanned.push(r["u" + i]);
+        }
+        return { m: r.m, p: r.p, total, unplanned };
+      });
+
+    default:
+      return rows;
+  }
+}
+
+function assignDataset(name, value) {
+  switch (name) {
+    case "PLANTS": PLANTS = value; break;
+    case "TRANSIT": TRANSIT = value; break;
+    case "SLOCS": SLOCS = value; break;
+    case "MATERIALS": MATERIALS = value; break;
+    case "BOMS": BOMS = value; break;
+    case "PROD_VERSIONS": PROD_VERSIONS = value; break;
+    case "FINISHED_GOODS": FINISHED_GOODS = value; break;
+    case "STOCK": STOCK = value; break;
+    case "ORDER_STATUS": ORDER_STATUS = value; break;
+    case "PROD_ORDERS": PROD_ORDERS = value; break;
+    case "MRP_DATA": MRP_DATA = value; break;
+    case "SALES_ORDERS": SALES_ORDERS = value; break;
+    case "SHIP_POINTS": SHIP_POINTS = value; break;
+    case "SCHED_MARGIN": SCHED_MARGIN = value; break;
+    case "PIR": PIR = value; break;
+    case "PLANNED_ORDERS": PLANNED_ORDERS = value; break;
+    case "WORK_CENTRES": WORK_CENTRES = value; break;
+    case "BATCHES": BATCHES = value; break;
+    case "BATCH_MANAGED": BATCH_MANAGED = new Set(value); break;
+    case "CONSUMPTION": CONSUMPTION = value; break;
+    case "DELIVERIES": DELIVERIES = value; break;
+    case "MVT_TYPES": MVT_TYPES = value; break;
+    case "GOODS_MVT": GOODS_MVT = value; break;
+    case "RESERVATIONS": RESERVATIONS = value; break;
+    case "SUBCON": SUBCON = value; break;
+    case "SUPPLY": SUPPLY = value; break;
+    default: break;
+  }
+}
+
+/* Pegging lines and subcontract components live on their own sheets, keyed
+   back to the document and item of the order they belong to. */
+function attachChildren(spec, rows) {
+  const field = spec.shape.slice("child:".length);
+  const parents = spec.dataset === "SUPPLY" ? SUPPLY : spec.dataset === "SUBCON" ? SUBCON : null;
+  if (!parents) return;
+
+  const index = new Map();
+  for (const p of parents) {
+    p[field] = [];
+    index.set(`${p.doc}|${p.item}`, p);
+  }
+  for (const r of rows) {
+    const parent = index.get(`${r.doc}|${r.item}`);
+    if (!parent) continue;
+    const child = {};
+    for (const c of spec.cols) if (c.key !== "doc" && c.key !== "item") child[c.key] = r[c.key];
+    parent[field].push(child);
+  }
+}
+
+/* Indexes that used to be computed while the module loaded */
+function rebuildDerived() {
+  SLOC_BY_CODE = Object.fromEntries(SLOCS.map((s) => [s.code, s]));
+  ORDER_BY_ID = Object.fromEntries(PROD_ORDERS.map((o) => [o.order, o]));
+  MATERIAL_OPTIONS = Object.keys(BOMS)
+    .map((code) => ({
+      code,
+      desc: matInfo(code).desc,
+      kind: FINISHED_GOODS.some((f) => f.code === code) ? "finished good" : "sub-assembly",
+    }))
+    .sort((a, b) => (a.kind === b.kind ? a.code.localeCompare(b.code) : a.kind === "finished good" ? -1 : 1));
+}
+
+/* The offline single-file build has no workbook to fetch and no spreadsheet
+   reader: the data is baked into the page as plain JSON, already in the shape
+   the app uses. It is a snapshot taken at build time rather than a live file. */
+function useEmbeddedData(raw) {
+  let rows = 0;
+  for (const name of Object.keys(raw)) {
+    const v = raw[name];
+    assignDataset(name, v);
+    if (Array.isArray(v)) rows += v.length;
+    else if (v && typeof v === "object") rows += Object.keys(v).length;
+  }
+  // the served workbook carries these on their own sheets; embedded they are nested
+  for (const s of SUPPLY) if (!Array.isArray(s.pegged)) s.pegged = [];
+  for (const s of SUBCON) if (!Array.isArray(s.provided)) s.provided = [];
+
+  rebuildDerived();
+  if (!FINISHED_GOODS.length || !Object.keys(BOMS).length) {
+    throw new Error("The data built into this file has no finished goods or bills of material in it.");
+  }
+  DATA_SOURCE = { file: "built into this file", sheets: Object.keys(raw).length, rows, loadedAt: new Date() };
+  return DATA_SOURCE;
+}
+
+async function readWorkbook() {
+  if (typeof window !== "undefined" && window.__PPC_DATA__) {
+    return useEmbeddedData(window.__PPC_DATA__);
+  }
+
+  await loadReader();
+
+  const url = new URL(WORKBOOK_FILE, document.baseURI).href;
+  let res;
+  try {
+    res = await fetch(url, { cache: "no-store" });
+  } catch (e) {
+    throw new Error(`${WORKBOOK_FILE} could not be fetched. If you opened this file from disk, serve the folder over http instead — the browser blocks reading local files.`);
+  }
+  if (!res.ok) throw new Error(`${WORKBOOK_FILE} came back ${res.status} ${res.statusText}. It should sit next to this page.`);
+
+  const wb = XLSX.read(await res.arrayBuffer(), { type: "array" });
+  const specs = readSchema(wb);
+
+  let rowCount = 0;
+  const children = [];
+  for (const spec of specs) {
+    const rows = readTable(wb, spec);
+    rowCount += rows.length;
+    if (spec.shape.indexOf("child:") === 0) children.push({ spec, rows });
+    else assignDataset(spec.dataset, reshape(spec, rows));
+  }
+  for (const c of children) attachChildren(c.spec, c.rows);
+
+  rebuildDerived();
+
+  if (!FINISHED_GOODS.length || !Object.keys(BOMS).length) {
+    throw new Error("The workbook loaded but has no finished goods or bills of material in it.");
+  }
+
+  DATA_SOURCE = { file: WORKBOOK_FILE, sheets: specs.length, rows: rowCount, loadedAt: new Date() };
+  return DATA_SOURCE;
+}
+
+let datasetPromise = null;
+function loadDataset() {
+  if (!datasetPromise) datasetPromise = readWorkbook();
+  return datasetPromise;
+}
 
 /* ============================================================
    HELPERS
@@ -763,7 +483,11 @@ const DAY = 86400000;
 const today = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 const addDays = (d, n) => new Date(d.getTime() + n * DAY);
 const diffDays = (a, b) => Math.round((a.getTime() - b.getTime()) / DAY);
-const toISO = (d) => d.toISOString().slice(0, 10);
+/* Local date, not UTC. toISOString() converts first, so east of UTC every date
+   handed to a <input type="date"> came back a day early — a run scheduled for
+   the 10th displayed and re-parsed as the 9th. */
+const toISO = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const fmtDate = (d) =>
   d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
 const fmtDateLong = (d) =>
@@ -774,13 +498,7 @@ const matInfo = (code) =>
   MATERIALS[code] || { desc: "Not found in the material master", uom: "EA", lead: 0, proc: "F", mrp: "—", missing: true };
 
 /* Anything with a bill of material can be planned, not just finished goods */
-const MATERIAL_OPTIONS = Object.keys(BOMS)
-  .map((code) => ({
-    code,
-    desc: matInfo(code).desc,
-    kind: FINISHED_GOODS.some((f) => f.code === code) ? "finished good" : "sub-assembly",
-  }))
-  .sort((a, b) => (a.kind === b.kind ? a.code.localeCompare(b.code) : a.kind === "finished good" ? -1 : 1));
+let MATERIAL_OPTIONS = [];
 
 const isDiscrete = (uom) => uom === "EA" || uom === "PC";
 const roundQty = (q, uom) => (isDiscrete(uom) ? Math.ceil(q - 1e-9) : Math.round(q * 100) / 100);
@@ -797,576 +515,6 @@ const PULL_IN_WINDOW = 10;
 /* ============================================================
    AVAILABILITY ENGINE
    ============================================================ */
-
-/* ============================================================
-   SAP MAPPING
-
-   Every dataset above is demo data shaped the way this engine wants it. In a live
-   build the shape comes from SAP. SAP_SOURCES declares where each field comes from,
-   and SAP_ADAPTERS are the functions that turn SAP-shaped rows into the internal
-   shape — replace the demo constants with adapter output and nothing else changes.
-   ============================================================ */
-
-const SAP_SOURCES = [
-  {
-    area: "Material master", cds: "I_Product · I_ProductPlant · I_ProductDescription",
-    target: "MATERIALS",
-    tables: [
-      { t: "MARA", text: "General material data", key: "MATNR" },
-      { t: "MARC", text: "Plant data for material", key: "MATNR, WERKS" },
-      { t: "MAKT", text: "Material descriptions", key: "MATNR, SPRAS" },
-    ],
-    fields: [
-      ["code", "MARA-MATNR", "Material number"],
-      ["desc", "MAKT-MAKTX", "Description in the logon language"],
-      ["uom", "MARA-MEINS", "Base unit of measure"],
-      ["proc", "MARC-BESKZ", "Procurement type: E in-house, F external, X both"],
-      ["lead", "MARC-PLIFZ / MARC-DZEIT", "Planned delivery time for bought parts, in-house production time for made parts"],
-      ["mrp", "MARC-DISPO", "MRP controller"],
-    ],
-    read: "BAPI_MATERIAL_GET_DETAIL · OData API_PRODUCT_SRV",
-    tcode: "MM03",
-  },
-  {
-    area: "Bill of material", cds: "I_BillOfMaterial · I_BillOfMaterialItem · I_BOMHeaderBasic",
-    target: "BOMS",
-    tables: [
-      { t: "MAST", text: "Material to BOM link", key: "MATNR, WERKS, STLAN, STLNR, STLAL" },
-      { t: "STKO", text: "BOM header", key: "STLNR, STLAL, STKOZ" },
-      { t: "STPO", text: "BOM item", key: "STLNR, STLKN, STPOZ" },
-    ],
-    fields: [
-      ["alternative key", "MAST-STLAL", "BOM alternative — the key under each material in BOMS"],
-      ["usage", "MAST-STLAN", "BOM usage, 1 for production"],
-      ["code", "STPO-IDNRK", "Component material"],
-      ["qty", "STPO-MENGE / STKO-BMENG", "Component quantity per base quantity of the header"],
-      ["scrap", "STPO-AUSCH", "Component scrap percentage"],
-      ["(filter)", "STPO-POSTP", "Item category — L stock item, N non-stock, T text. Only stock items are exploded"],
-      ["(filter)", "STPO-DATUV / STKO-DATUV", "Valid-from date; explode with the order date"],
-    ],
-    read: "CS_BOM_EXPL_MAT_V2 for a full explosion, or read MAST/STPO level by level",
-    tcode: "CS03, CS11, CS12",
-  },
-  {
-    area: "Production version", cds: "I_ProductionVersion",
-    target: "PROD_VERSIONS",
-    tables: [
-      { t: "MKAL", text: "Production versions for material", key: "MATNR, WERKS, VERID" },
-      { t: "MKAL_MDV", text: "Version, line and lot size detail", key: "MATNR, WERKS, VERID" },
-    ],
-    fields: [
-      ["version", "MKAL-VERID", "Production version"],
-      ["text", "MKAL-TEXT1", "Version description"],
-      ["bom", "MKAL-STLAL", "BOM alternative this version explodes"],
-      ["bomUsage", "MKAL-STLAN", "BOM usage"],
-      ["routing", "MKAL-PLNNR", "Task list group"],
-      ["counter", "MKAL-PLNAL", "Group counter"],
-      ["lotFrom / lotTo", "MKAL-BSTMI / MKAL-BSTMA", "Lot size range the version is valid for"],
-      ["validFrom / validTo", "MKAL-ADATU / MKAL-BDATU", "Validity period"],
-      ["locked", "MKAL-MKSP", "Lock indicator; a locked version is skipped by selection"],
-      ["line", "MKAL-SERKZ / MKAL-PLNNR text", "Production line or task list description"],
-    ],
-    read: "BAPI_PRODVERS_GETLIST · OData API_PRODUCTION_VERSION",
-    tcode: "C223, MM03 MRP 4 view",
-  },
-  {
-    area: "Plants and storage locations", cds: "I_Plant · I_StorageLocation",
-    target: "PLANTS, SLOCS",
-    tables: [
-      { t: "T001W", text: "Plants", key: "WERKS" },
-      { t: "T001L", text: "Storage locations", key: "WERKS, LGORT" },
-    ],
-    fields: [
-      ["id / name", "T001W-WERKS / T001W-NAME1", "Plant"],
-      ["code / name", "T001L-LGORT / T001L-LGOBE", "Storage location"],
-      ["type", "derived", "Stock type is not on T001L — classify by how the location is used, or read the stock category from MARD"],
-    ],
-    read: "Direct table read, small and static",
-    tcode: "OX10, OX09",
-  },
-  {
-    area: "Stock by storage location", cds: "I_MaterialStock · C_MaterialStockActualQuantity (MATDOC)",
-    target: "STOCK",
-    tables: [
-      { t: "MARD", text: "Storage location stock", key: "MATNR, WERKS, LGORT" },
-      { t: "MCHB", text: "Batch stock, if batch managed", key: "MATNR, WERKS, LGORT, CHARG" },
-    ],
-    fields: [
-      ["q (unrestricted)", "MARD-LABST", "Unrestricted-use stock"],
-      ["q (quality)", "MARD-INSME", "Stock in quality inspection"],
-      ["q (blocked)", "MARD-SPEME", "Blocked stock"],
-      ["q (restricted)", "MARD-EINME", "Restricted-use stock"],
-      ["q (in transit)", "MARC-UMLMC / MSLB", "Stock in transfer between plants"],
-    ],
-    read: "BAPI_MATERIAL_AVAILABILITY for ATP · BAPI_MATERIAL_STOCK_REQ_LIST for the MD04 picture",
-    tcode: "MMBE, MB52, MD04",
-  },
-  {
-    area: "Batch stock",
-    cds: "I_BatchStock · I_Batch · I_MaterialStock with Batch",
-    target: "BATCHES, BATCH_MANAGED",
-    tables: [
-      { t: "MCHB", text: "Batch stock by storage location", key: "MATNR, WERKS, LGORT, CHARG" },
-      { t: "MCHA", text: "Batch master by plant", key: "MATNR, WERKS, CHARG" },
-      { t: "MCH1", text: "Batch master, cross plant", key: "MATNR, CHARG" },
-      { t: "MARA", text: "Batch management indicator", key: "MATNR" },
-    ],
-    fields: [
-      ["(is batch managed)", "MARA-XCHPF / MARC-XCHPF", "Only materials with this set have batch records; everything else stays at location level"],
-      ["batch", "MCHB-CHARG", "Batch number"],
-      ["qty", "MCHB-CLABS / CINSM / CSPEM", "Unrestricted, in inspection and blocked batch stock"],
-      ["status", "MCHA-ZUSTD", "Batch status: unrestricted or restricted"],
-      ["expOffset", "MCHA-VFDAT", "Shelf life expiry date"],
-      ["mfgOffset", "MCHA-HSDAT", "Date of manufacture"],
-      ["vendorBatch", "MCHA-LICHA", "Vendor batch number"],
-    ],
-    read: "BAPI_MATERIAL_AVAILABILITY at batch level, or read MCHB joined to MCHA",
-    tcode: "MMBE, MB56, MSC3",
-    note: "For a batch managed material the batch quantities must add up to MARD. If they do not, availability will disagree with MMBE. A material flagged batch managed with stock but no MCHB rows is an extract gap, not an empty store.",
-  },
-  {
-    area: "Stock at subcontractor", cds: "I_MaterialStock with SpecialStockType = O",
-    target: "SUBCON.provided",
-    tables: [
-      { t: "MSLB", text: "Special stock with vendor", key: "MATNR, WERKS, LIFNR, SOBKZ" },
-    ],
-    fields: [
-      ["qty at vendor", "MSLB-LBLAB", "Unrestricted special stock held at the vendor"],
-      ["vendor", "MSLB-LIFNR", "Vendor holding the stock"],
-      ["special stock indicator", "MSLB-SOBKZ = O", "Material provided to vendor"],
-    ],
-    read: "Read MSLB per vendor, or the components tab of the subcontracting PO",
-    tcode: "MBLB, ME2O",
-  },
-  {
-    area: "Open reservations", cds: "I_ReservationDocumentItem",
-    target: "RESERVATIONS",
-    tables: [
-      { t: "RESB", text: "Reservation and dependent requirements", key: "RSNUM, RSPOS, RSART" },
-    ],
-    fields: [
-      ["id", "RESB-RSNUM / RESB-RSPOS", "Reservation number and item"],
-      ["m / p", "RESB-MATNR / RESB-WERKS", "Material and plant"],
-      ["reqQty", "RESB-BDMNG", "Requirement quantity"],
-      ["withdrawn", "RESB-ENMNG", "Quantity already withdrawn"],
-      ["offset", "RESB-BDTER", "Requirement date"],
-      ["finalIssue", "RESB-KZEAR", "Final issue indicator — the item is closed"],
-      ["order", "RESB-AUFNR", "Order the reservation belongs to"],
-      ["(filter)", "RESB-XLOEK", "Deletion indicator — exclude deleted items"],
-      ["(filter)", "RESB-XWAOK", "Goods movement allowed"],
-    ],
-    read: "BAPI_RESERVATION_GETDETAIL, or read RESB by MATNR and WERKS",
-    tcode: "MB25, CO03 component overview",
-  },
-  {
-    area: "Production orders and statuses", cds: "I_ManufacturingOrder · I_ManufacturingOrderItem · I_ManufacturingOrderStatus",
-    target: "PROD_ORDERS",
-    tables: [
-      { t: "AUFK", text: "Order master", key: "AUFNR" },
-      { t: "AFKO", text: "Order header, production", key: "AUFNR" },
-      { t: "AFPO", text: "Order item", key: "AUFNR, POSNR" },
-      { t: "JEST + TJ02T", text: "Object status and status texts", key: "OBJNR, STAT" },
-      { t: "AFRU", text: "Confirmations", key: "RUECK, RMZHL" },
-    ],
-    fields: [
-      ["order", "AUFK-AUFNR", "Order number"],
-      ["type", "AUFK-AUART", "Order type"],
-      ["plant", "AUFK-WERKS", "Plant"],
-      ["createdOffset / createdBy", "AUFK-ERDAT / AUFK-ERNAM", "Creation date and user"],
-      ["material", "AFKO-PLNBEZ", "Material being produced"],
-      ["qty", "AFKO-GAMNG", "Total order quantity"],
-      ["delivered", "AFPO-WEMNG", "Quantity delivered to stock"],
-      ["confirmed", "AFRU-LMNGA (summed)", "Yield confirmed"],
-      ["startOffset / finishOffset", "AFKO-GSTRP / AFKO-GLTRP", "Basic start and finish dates"],
-      ["mrp", "AFKO-DISPO", "MRP controller"],
-      ["status", "JEST-STAT via TJ02T-TXT04", "System statuses: CRTD, REL, PRT, MSPT, PCNF, CNF, DLV, GMPS, TECO. JEST-INACT = X means the status is not active"],
-    ],
-    read: "BAPI_PRODORD_GET_DETAIL · BAPI_PRODORD_GET_LIST · STATUS_READ for statuses",
-    tcode: "CO03, COOIS, COHV",
-  },
-  {
-    area: "Purchase orders and stock transfer orders", cds: "I_PurchaseOrderAPI01 · I_PurchaseOrderItemAPI01 · I_PurOrdScheduleLine · I_PurchaseOrderHistory",
-    target: "SUPPLY",
-    tables: [
-      { t: "EKKO", text: "Purchasing document header", key: "EBELN" },
-      { t: "EKPO", text: "Purchasing document item", key: "EBELN, EBELP" },
-      { t: "EKET", text: "Schedule lines", key: "EBELN, EBELP, ETENR" },
-      { t: "EKBE", text: "Purchase order history", key: "EBELN, EBELP, ZEKKN, VGABE" },
-      { t: "LFA1", text: "Vendor master", key: "LIFNR" },
-    ],
-    fields: [
-      ["doc / item", "EKPO-EBELN / EKPO-EBELP", "Document and item"],
-      ["type", "EKKO-BSART", "Document type — distinguishes a PO from a UB stock transfer order"],
-      ["vendor / vendorCode", "LFA1-NAME1 / EKKO-LIFNR", "Vendor. For an STO read the supplying plant from EKPO-RESWK"],
-      ["createdOffset / createdBy", "EKKO-AEDAT / EKKO-ERNAM", "Creation date and user"],
-      ["mode", "EKPO-ESTKZ", "Creation indicator: B from a purchase requisition raised by MRP, blank when entered manually"],
-      ["q", "EKPO-MENGE", "Ordered quantity"],
-      ["received", "EKBE-MENGE where VGABE = 1", "Goods receipt quantity, net of reversals via EKBE-SHKZG"],
-      ["offset", "EKET-EINDT", "Delivery date on the schedule line"],
-      ["pegged", "see MRP pegging below", "Not a PO field — comes from the requirement assignment"],
-      ["(subcontracting)", "EKPO-PSTYP = 3", "Item category L: a subcontracting item"],
-    ],
-    read: "BAPI_PO_GETDETAIL1 · OData API_PURCHASEORDER_PROCESS_SRV",
-    tcode: "ME23N, ME2M, ME2O, ME80FN",
-  },
-  {
-    area: "MRP pegging", cds: "C_MRPMaterialStockRequirement · I_MRPMaterialFlow",
-    target: "SUPPLY.pegged",
-    tables: [
-      { t: "MDPSX / MDEZX", text: "MRP list and stock requirements list, read into memory", key: "MATNR, WERKS" },
-      { t: "MDKP", text: "MRP document header", key: "DTART, MATNR, PLWRK" },
-    ],
-    fields: [
-      ["pegged.order", "MDPSX-DELNR / order report", "The requirement a receipt is assigned to"],
-      ["pegged.qty", "MDPSX-MNG01", "Quantity assigned"],
-      ["pegged.run", "MDKP-DSDAT", "Date of the MRP run that produced the assignment"],
-    ],
-    read: "BAPI_MATERIAL_STOCK_REQ_LIST returns the MD04 lines; the order report behind MD09 gives the pegged relationship",
-    tcode: "MD04, MD05, MD09",
-    note: "Pegging is not stored as a field on the purchase order. It is the result of the last MRP run and changes every run, so extract it with the same timestamp as the rest of the data.",
-  },
-  {
-    area: "Sales orders",
-    cds: "I_SalesOrderItem · I_SalesOrderScheduleLine · C_SalesOrderItemCube",
-    target: "SALES_ORDERS",
-    tables: [
-      { t: "VBAK", text: "Sales document header", key: "VBELN" },
-      { t: "VBAP", text: "Sales document item", key: "VBELN, POSNR" },
-      { t: "VBEP", text: "Schedule lines", key: "VBELN, POSNR, ETENR" },
-      { t: "VBBE", text: "Sales requirements", key: "MATNR, WERKS, VBELN" },
-      { t: "KNA1", text: "Customer master", key: "KUNNR" },
-    ],
-    fields: [
-      ["doc / item", "VBAP-VBELN / VBAP-POSNR", "Order and item"],
-      ["m / p", "VBAP-MATNR / VBAP-WERKS", "Material and delivering plant"],
-      ["qty", "VBEP-WMENG", "Requested quantity on the schedule line"],
-      ["confirmed", "VBEP-BMENG", "Confirmed quantity after ATP"],
-      ["reqOffset", "VBEP-EDATU / VBEP-MBDAT", "Requested delivery date, and material availability date"],
-      ["customer / soldTo", "KNA1-NAME1 / VBAK-KUNNR", "Sold-to party"],
-      ["(filter)", "VBUP-LFSTA", "Delivery status — exclude fully delivered items"],
-    ],
-    read: "BAPI_SALESORDER_GETLIST · OData API_SALES_ORDER_SRV",
-    tcode: "VA03, VA05, CO09",
-    note: "VBBE holds the open sales requirement MRP actually sees. Reading VBAP alone will include lines already delivered.",
-  },
-  {
-    area: "Backward scheduling",
-    cds: "I_Route · I_ShippingPoint · I_ProductPlant (SchedulingMarginKey)",
-    target: "SHIP_POINTS, SCHED_MARGIN, backwardSchedule()",
-    tables: [
-      { t: "TVRO", text: "Route, holds transit time", key: "ROUTE" },
-      { t: "TVST", text: "Shipping point, loading and pick/pack time", key: "VSTEL" },
-      { t: "T436A", text: "Scheduling margin key", key: "WERKS, FHORI" },
-      { t: "MARC", text: "Margin key and in-house time on the material", key: "MATNR, WERKS" },
-      { t: "TFACD / TFACS", text: "Factory calendar", key: "IDENT" },
-    ],
-    fields: [
-      ["transit", "TVRO-TRAZTD", "Transit time on the route determined for the ship-to party"],
-      ["loading", "TVST-VSTEL loading time", "Loading time at the shipping point"],
-      ["pickPack", "TVST-VSTEL pick/pack time", "Picking and packing time at the shipping point"],
-      ["floatAfter", "T436A-SICHZ", "Float after production, the safety buffer before material availability"],
-      ["floatBefore", "T436A-VORGZ", "Float before production, buffer between release and start"],
-      ["opening", "T436A-EROEF", "Opening period — how early the planned order is created"],
-      ["marginKey", "MARC-FHORI", "Scheduling margin key assigned to the material and plant"],
-      ["inHouse", "MARC-DZEIT, or PLPO standard values", "Lot-size independent time, or the routing for a lot-dependent one"],
-      ["(calendar)", "T001W-FABKL", "Factory calendar on the plant — replaces the weekday rule used here"],
-    ],
-    read: "Scheduling is done by SAP itself. Read the dates off the order: PLAF-PSTTR/PEDTR, AFKO-GSTRP/GLTRP, VBEP-MBDAT/WADAT",
-    tcode: "OVLZ, OPU5, OPJK, MD04",
-    note: "Prefer taking the scheduled dates off the planned or production order rather than recalculating them. Recalculating is only for lines that do not exist yet, which is exactly what this input screen does.",
-  },
-  {
-    area: "Outbound deliveries",
-    cds: "I_DeliveryDocument · I_DeliveryDocumentItem · I_OutbDeliveryItem",
-    target: "DELIVERIES",
-    tables: [
-      { t: "LIKP", text: "Delivery header", key: "VBELN" },
-      { t: "LIPS", text: "Delivery item", key: "VBELN, POSNR" },
-      { t: "VBUK / VBUP", text: "Header and item status", key: "VBELN, POSNR" },
-    ],
-    fields: [
-      ["doc / item", "LIPS-VBELN / LIPS-POSNR", "Delivery and item"],
-      ["m / p", "LIPS-MATNR / LIPS-WERKS", "Material and issuing plant"],
-      ["qty", "LIPS-LFIMG", "Delivery quantity"],
-      ["offset", "LIKP-WADAT_IST / LIKP-WADAT", "Actual goods issue date, else the planned one"],
-      ["gi", "VBUK-WBSTK = C", "Goods issue posted — the stock has left the plant"],
-      ["so", "LIPS-VGBEL / LIPS-VGPOS", "Sales order and item the delivery came from"],
-      ["customer", "LIKP-KUNNR via KNA1-NAME1", "Ship-to party"],
-    ],
-    read: "BAPI_OUTB_DELIVERY_GETLIST · OData API_OUTBOUND_DELIVERY_SRV",
-    tcode: "VL03N, VL06O",
-    note: "Dispatch on this screen is goods issue posted, movement type 601, not delivery creation. A delivery created but not issued is still sitting in the plant.",
-  },
-  {
-    area: "Planned independent requirements",
-    cds: "I_PlndIndepRqmt · I_PlndIndepRqmtItem",
-    target: "PIR",
-    tables: [
-      { t: "PBIM", text: "Independent requirements by material", key: "MATNR, WERKS, BEDAE, VERSB" },
-      { t: "PBED", text: "Independent requirement periods", key: "BDZEI" },
-    ],
-    fields: [
-      ["m / p", "PBIM-MATNR / PBIM-WERKS", "Material and plant"],
-      ["version", "PBIM-VERSB", "Requirements version; only active versions are relevant"],
-      ["qty", "PBED-PLNMG", "Planned quantity for the period"],
-      ["withdrawn", "PBED-VERBR", "Quantity already consumed by sales orders"],
-      ["offset", "PBED-PDATU", "Requirement date"],
-    ],
-    read: "BAPI_REQUIREMENTS_GETDETAIL · OData API_PLND_INDEP_RQMT_SRV",
-    tcode: "MD63, MD73",
-    note: "Forecast still to be consumed is PLNMG minus VERBR. Adding the full PLNMG double counts demand that sales orders already cover.",
-  },
-  {
-    area: "Planned orders",
-    cds: "I_PlannedOrder",
-    target: "PLANNED_ORDERS",
-    tables: [
-      { t: "PLAF", text: "Planned order", key: "PLNUM" },
-    ],
-    fields: [
-      ["order", "PLAF-PLNUM", "Planned order number"],
-      ["m / p", "PLAF-MATNR / PLAF-PLWRK", "Material and planning plant"],
-      ["qty", "PLAF-GSMNG", "Total planned quantity"],
-      ["startOffset / finishOffset", "PLAF-PSTTR / PLAF-PEDTR", "Order start and finish dates"],
-      ["opening", "PLAF-PERTR", "Opening date — the day it must be converted to stay on time"],
-      ["firmed", "PLAF-STLFX / PLAF-KZFIX", "Firming indicator; unfirmed orders are rebuilt by the next MRP run"],
-      ["wc", "PLAF-VERID via MKAL", "Line comes from the production version on the planned order"],
-    ],
-    read: "BAPI_PLANNEDORDER_GET_DETAIL · OData API_PLANNED_ORDER",
-    tcode: "MD04, MD12, MD16",
-    note: "An unfirmed planned order whose opening date has passed is the single most common cause of a late order. It looks fine on MD04 until MRP deletes and re-creates it.",
-  },
-  {
-    area: "Work centres and capacity",
-    cds: "I_WorkCenter · I_WorkCenterCapacity · C_CapacityRequirement",
-    target: "WORK_CENTRES",
-    tables: [
-      { t: "CRHD", text: "Work centre header", key: "OBJTY, OBJID" },
-      { t: "CRCA", text: "Work centre to capacity link", key: "OBJTY, OBJID, KAPID" },
-      { t: "KAKO", text: "Capacity header", key: "KAPID" },
-      { t: "KBED", text: "Capacity requirements", key: "BEDID, KAPID" },
-      { t: "AFVC / AFVV", text: "Order operation and quantities", key: "AUFPL, APLZL" },
-    ],
-    fields: [
-      ["id / desc", "CRHD-ARBPL / CRTX-KTEXT", "Work centre and description"],
-      ["plant", "CRHD-WERKS", "Plant"],
-      ["grossPerWeek", "KAKO-BEGZT, ENDZT, PAUSE, AANZK", "Shift start, end, break and number of individual capacities"],
-      ["util", "KAKO-NGRAD", "Capacity utilisation rate"],
-      ["load", "KBED-KAPBED / AFVV-BEARZ", "Capacity requirement per operation, in the operation unit"],
-      ["(off line)", "KAKO-KAPTPR shift sequence, or an available capacity version", "A work centre taken off line for maintenance or an unmanned shift. Marked by hand on the capacity screen here"],
-      ["hoursPer", "AFVV-VGW01..VGW06 / PLPO", "Standard values on the routing operation"],
-    ],
-    read: "BAPI_WORKCENTER_GETLIST · CM01/CM50 evaluations · OData API_WORKCENTER",
-    tcode: "CR03, CM01, CM50, CM25",
-    note: "Available capacity is not a stored number. It is derived from the shift definition on KAKO less breaks, times the number of individual capacities, times the utilisation rate.",
-  },
-  {
-    area: "Consumption history",
-    cds: "I_MaterialConsumption · I_ProductConsumption · C_MaterialConsumptionQry",
-    target: "CONSUMPTION",
-    tables: [
-      { t: "MVER", text: "Material consumption by period", key: "MATNR, WERKS, GJAHR, PERKZ" },
-      { t: "MARC", text: "Period indicator and consumption relevance", key: "MATNR, WERKS" },
-      { t: "MSEG", text: "The movements behind the totals", key: "MBLNR, MJAHR, ZEILE" },
-    ],
-    fields: [
-      ["total[]", "MVER-GSV01 … GSV12", "Total consumption per period. Which index is which month depends on the fiscal year variant, not the calendar"],
-      ["unplanned[]", "MVER-GSU01 … GSU12", "Unplanned consumption — issues with no order reference behind them"],
-      ["(period type)", "MARC-PERKZ", "M monthly, W weekly, P posting period. The array length follows this"],
-      ["(year)", "MVER-GJAHR", "One record per material, plant and year; twelve periods needs two records"],
-      ["(detail)", "MSEG-BWART in 261, 262, 201, 543", "Movement level detail, retained for a shorter window than MVER"],
-    ],
-    read: "Read MVER directly, or I_MaterialConsumption on S/4HANA",
-    tcode: "MM03 forecasting view, MC.9, MCBA",
-    note: "MVER periods follow the fiscal year variant on the company code, so period 01 is not necessarily January. Map them through T009B before charting, or the history will be shifted.",
-  },
-  {
-    area: "Goods movements", cds: "I_MaterialDocumentHeader · I_MaterialDocumentItem",
-    target: "GOODS_MVT",
-    tables: [
-      { t: "MKPF", text: "Material document header", key: "MBLNR, MJAHR" },
-      { t: "MSEG", text: "Material document item", key: "MBLNR, MJAHR, ZEILE" },
-      { t: "T156T", text: "Movement type texts", key: "BWART, SPRAS" },
-    ],
-    fields: [
-      ["doc / item", "MSEG-MBLNR / MSEG-ZEILE", "Material document and item"],
-      ["offset", "MKPF-BUDAT", "Posting date"],
-      ["user", "MKPF-USNAM", "User who posted"],
-      ["mvt", "MSEG-BWART", "Movement type: 101 receipt, 261 issue to order, 262 reversal, 311 transfer, 541 to subcontractor, 543 consumption at subcontractor"],
-      ["m / p / sloc", "MSEG-MATNR / WERKS / LGORT", "Material, plant, storage location"],
-      ["qty", "MSEG-MENGE", "Quantity, with MSEG-SHKZG giving the sign: S debit, H credit"],
-      ["ref", "MSEG-AUFNR / MSEG-EBELN", "Order or purchase order the movement is against"],
-    ],
-    read: "BAPI_MATERIAL_DOCUMENT_LIST · OData API_MATERIAL_DOCUMENT_SRV",
-    tcode: "MB51, MIGO",
-  },
-];
-
-/* Adapters. Each takes rows in SAP field names and returns the internal shape. */
-const dayOffset = (d, today) => Math.round((new Date(d).setHours(0, 0, 0, 0) - today.getTime()) / DAY);
-
-const SAP_ADAPTERS = {
-  /* MARA + MARC + MAKT joined on MATNR (and WERKS for MARC) */
-  materials(rows) {
-    const out = {};
-    for (const r of rows) {
-      out[r.MATNR] = {
-        desc: r.MAKTX,
-        uom: r.MEINS,
-        proc: r.BESKZ,
-        lead: r.BESKZ === "E" ? Number(r.DZEIT || 0) : Number(r.PLIFZ || 0),
-        mrp: r.DISPO,
-      };
-    }
-    return out;
-  },
-
-  /* MAST joined to STPO. Only stock items (POSTP = L) are exploded. */
-  boms(rows) {
-    const out = {};
-    for (const r of rows) {
-      if (r.POSTP && r.POSTP !== "L") continue;
-      const alt = String(r.STLAL || "1");
-      out[r.MATNR] = out[r.MATNR] || {};
-      out[r.MATNR][alt] = out[r.MATNR][alt] || [];
-      out[r.MATNR][alt].push({
-        code: r.IDNRK,
-        qty: Number(r.MENGE) / Number(r.BMENG || 1),
-        scrap: Number(r.AUSCH || 0),
-      });
-    }
-    return out;
-  },
-
-  /* MKAL */
-  productionVersions(rows, today) {
-    const out = {};
-    for (const r of rows) {
-      out[r.MATNR] = out[r.MATNR] || [];
-      out[r.MATNR].push({
-        version: r.VERID,
-        text: r.TEXT1,
-        bom: String(r.STLAL || "1"),
-        bomUsage: String(r.STLAN || "1"),
-        routing: r.PLNNR,
-        counter: r.PLNAL,
-        line: r.LINE_TEXT || r.PLNNR,
-        lotFrom: Number(r.BSTMI || 0),
-        lotTo: Number(r.BSTMA || 9999999),
-        validFrom: dayOffset(r.ADATU, today),
-        validTo: dayOffset(r.BDATU, today),
-        locked: r.MKSP === "X" || r.MKSP === "1",
-      });
-    }
-    return out;
-  },
-
-  /* MARD, split into one row per stock category so exclusion works per location */
-  stock(rows, slocOf) {
-    const out = [];
-    const push = (r, q, cat) => { if (Number(q) > 0) out.push({ m: r.MATNR, p: r.WERKS, s: slocOf ? slocOf(r.LGORT, cat) : r.LGORT, q: Number(q) }); };
-    for (const r of rows) {
-      push(r, r.LABST, "unrestricted");
-      push(r, r.INSME, "quality");
-      push(r, r.SPEME, "blocked");
-      push(r, r.EINME, "restricted");
-    }
-    return out;
-  },
-
-  /* RESB. Deleted items and items with no open quantity are dropped by the engine. */
-  reservations(rows, today) {
-    return rows
-      .filter((r) => r.XLOEK !== "X")
-      .map((r) => ({
-        id: `${r.RSNUM}/${String(r.RSPOS).padStart(4, "0")}`,
-        m: r.MATNR,
-        p: r.WERKS,
-        order: r.AUFNR,
-        type: "Production order",
-        reqQty: Number(r.BDMNG || 0),
-        withdrawn: Number(r.ENMNG || 0),
-        offset: dayOffset(r.BDTER, today),
-        finalIssue: r.KZEAR === "X",
-      }));
-  },
-
-  /* AUFK + AFKO + AFPO, with active statuses from JEST/TJ02T already resolved to codes */
-  productionOrders(rows, today) {
-    return rows.map((r) => ({
-      order: r.AUFNR,
-      plant: r.WERKS,
-      material: r.PLNBEZ,
-      type: r.AUART,
-      mrp: r.DISPO,
-      qty: Number(r.GAMNG || 0),
-      delivered: Number(r.WEMNG || 0),
-      confirmed: Number(r.LMNGA || 0),
-      createdOffset: dayOffset(r.ERDAT, today),
-      startOffset: dayOffset(r.GSTRP, today),
-      finishOffset: dayOffset(r.GLTRP, today),
-      mode: r.ERNAM && /^(RMMRP|MRP)/i.test(r.ERNAM) ? "MRP" : "Manual",
-      createdBy: r.ERNAM,
-      status: r.STATUS || [],
-    }));
-  },
-
-  /* EKKO + EKPO + EKET + EKBE + LFA1. Subcontracting items (PSTYP 3) are split out. */
-  purchaseOrders(rows, today) {
-    const po = [], sc = [];
-    for (const r of rows) {
-      const received = (r.HISTORY || [])
-        .filter((h) => String(h.VGABE) === "1")
-        .reduce((a, h) => a + (h.SHKZG === "H" ? -Number(h.MENGE) : Number(h.MENGE)), 0);
-      const base = {
-        doc: r.EBELN,
-        item: String(r.EBELP),
-        vendor: r.NAME1 || (r.RESWK ? `Plant ${r.RESWK}` : r.LIFNR),
-        vendorCode: r.LIFNR || r.RESWK,
-        q: Number(r.MENGE || 0),
-        received,
-        createdOffset: dayOffset(r.AEDAT, today),
-        offset: dayOffset(r.EINDT, today),
-        mode: r.ESTKZ === "B" ? "MRP" : "Manual",
-        createdBy: r.ERNAM,
-        pegged: r.PEGGED || [],
-      };
-      if (String(r.PSTYP) === "3") {
-        sc.push({
-          ...base,
-          plant: r.WERKS,
-          material: r.MATNR,
-          service: r.TXZ01,
-          provided: (r.COMPONENTS || []).map((c) => ({
-            code: c.MATNR,
-            qty: Number(c.BDMNG || 0),
-            consumed: Number(c.ENMNG || 0),
-          })),
-        });
-      } else {
-        po.push({ ...base, type: r.BSART === "UB" ? "STO" : "PO", m: r.MATNR, p: r.WERKS });
-      }
-    }
-    return { supply: po, subcon: sc };
-  },
-
-  /* MKPF + MSEG */
-  goodsMovements(rows, today) {
-    return rows.map((r) => ({
-      doc: r.MBLNR,
-      item: String(r.ZEILE),
-      p: r.WERKS,
-      offset: dayOffset(r.BUDAT, today),
-      mvt: String(r.BWART),
-      ref: r.AUFNR || r.EBELN || "",
-      refType: r.AUFNR ? "PRD" : String(r.PSTYP) === "3" ? "SC" : "PO",
-      m: r.MATNR,
-      qty: Number(r.MENGE || 0),
-      sloc: r.LGORT || "",
-      user: r.USNAM,
-    }));
-  },
-};
 
 /* ============================================================
    SUMMARY
@@ -1464,22 +612,6 @@ function summarise({ programme, contended, projectionSet, capacityAll, risk, con
     starved.map((c) => `${c.code}, ${fmtQty(c.onHand, c.uom)} on hand against ${fmtQty(c.totalRequired, c.uom)} needed`),
     "Reordering the run changes who gets them.");
 
-  // --- consumption: one row per kind of problem
-  const exposed = consumption.filter((c) => c.exposed);
-  group("warning", "Consumption", "consumption",
-    `${plural(exposed.length, "component carries", "components carry")} less cover than the time it takes to replace`,
-    exposed.map((c) => `${c.mat}, ${days(c.coverDays)} of cover against a ${c.lead} day lead time`),
-    "A replenishment ordered today arrives after the stock runs out.");
-  const dead = consumption.filter((c) => c.idle >= 3);
-  for (const c of dead) {
-    add("watch", "Consumption", "consumption", `${c.mat} has not moved for ${c.idle} months`,
-      `${fmtQty(c.onHand, c.uom)} ${c.uom} sitting still. Check whether it is still in a live bill of material.`);
-  }
-  const settings = consumption.filter((c) => !c.exposed && c.idle < 3 && c.flags.length);
-  group("watch", "Consumption", "consumption",
-    `${plural(settings.length, "material has", "materials have")} usage that does not match the settings`,
-    settings.map((c) => `${c.mat}: ${c.flags[0].text.replace(/\.$/, "")}`));
-
   // --- what is already late on the floor and in purchasing
   const mspt = shopFloor.orders.filter((o) => !o.complete && o.missingParts);
   group("warning", "Shop floor", "prod", `${mspt.length} order${mspt.length === 1 ? " is" : "s are"} flagged missing parts`,
@@ -1525,7 +657,6 @@ function summarise({ programme, contended, projectionSet, capacityAll, risk, con
     { k: "Work centres over", v: `${capacityAll.filter((c) => c.totalOver > 0).length}`, s: `of ${capacityAll.length}${capacityAll.some((c) => c.unavailable) ? `, ${capacityAll.filter((c) => c.unavailable).length} off line` : `, peak ${Math.max(0, ...capacityAll.filter((c) => c.peak != null).map((c) => c.peak))}%`}`, screen: "capacity" },
     { k: "Order lines at risk", v: `${late.length}`, s: `of ${risk.length} in the horizon`, screen: "sales" },
     { k: "Shared components short", v: `${starved.length}`, s: `of ${contended.length} contended`, screen: "contention" },
-    { k: "Consumption warnings", v: `${consumption.filter((c) => c.status !== "ok").length}`, s: `of ${consumption.length} with history`, screen: "consumption" },
   ];
 
   const worst = issues[0] || null;
@@ -1951,7 +1082,7 @@ function orderBookSplit(risk, scope, rules) {
   const late = risk.filter((r) => !r.covered && r.expected).reduce((a, r) => a + r.qty, 0);
   const beyond = risk.filter((r) => !r.covered && !r.expected).reduce((a, r) => a + r.qty, 0);
   return [
-    { key: "shipped", label: "Already shipped", qty: r3(shipped), color: "#7C97AC" },
+    { key: "shipped", label: "Already shipped", qty: r3(shipped), color: "var(--mark-1)" },
     { key: "ontime", label: "Will ship on time", qty: r3(onTime), color: "var(--go)" },
     { key: "late", label: "Will ship late", qty: r3(late), color: "var(--caution)" },
     { key: "beyond", label: "No date in the horizon", qty: r3(beyond), color: "var(--stop)" },
@@ -2165,7 +1296,7 @@ function vendorStock(mat, plant, rules, pool) {
       const left = Math.max(0, c.qty - c.consumed - taken);
       if (left <= 0) continue;
       out.push({
-        code: c.code, vendor: sc.vendor, vendorCode: sc.vendorCode,
+        code: c.code, plant: sc.plant, vendor: sc.vendor, vendorCode: sc.vendorCode,
         doc: sc.doc, item: sc.item, parent: sc.material, service: sc.service,
         provided: c.qty, consumed: c.consumed, qty: left,
         sentOn: addDays(rules.t0, sc.createdOffset),
@@ -2671,14 +1802,14 @@ function contention(programme) {
    CHARTS
    ============================================================ */
 
-const SEQ_COLOR = ["#2C5D8F", "#1F7A54", "#A96A05", "#16706B", "#7A4E6E", "#7C97AC"];
+const SEQ_COLOR = ["var(--seq-1)", "var(--seq-2)", "var(--seq-3)", "var(--seq-4)", "var(--seq-5)", "var(--seq-6)"];
 
 const KIND_COLOR = {
-  inbound: "#7C97AC",
+  inbound: "var(--mark-1)",
   transfer: "var(--go)",
   sto: "var(--signal)",
-  recall: "#16706B",
-  chase: "#9C4A22",
+  recall: "var(--teal-ink)",
+  chase: "var(--mark-rust)",
   expedite: "var(--caution)",
   pr: "var(--stop)",
 };
@@ -2760,7 +1891,7 @@ function KitGantt({ lines, t0, needBy, fullKit, verdict }) {
           <g key={l.code}>
             <text x={LEFT - 10} y={y + 11} fontSize="11" textAnchor="end"
               fill="var(--ink)" className="crc-svg-mono">{l.code}</text>
-            <rect x={LEFT} y={y + 2} width={plotW} height="11" rx="1" fill="#F0F3F5" />
+            <rect x={LEFT} y={y + 2} width={plotW} height="11" rx="1" fill="var(--track)" />
             {segs.map((s, j) => {
               const x1 = x(s.from), x2 = Math.max(x(s.to), x(s.from) + 4);
               return (
@@ -2950,10 +2081,10 @@ function DemandSupplyChart({ d }) {
   const zero = y(0);
 
   const seg = [
-    ["so", "#7C97AC"], ["pir", "#A9BCC9"], ["dep", "var(--caution)"], ["runDep", "#C6813A"],
+    ["so", "var(--mark-1)"], ["pir", "var(--mark-2)"], ["dep", "var(--caution)"], ["runDep", "var(--mark-run)"],
   ];
   const sup = [
-    ["planned", "#8FBFA6"], ["prod", "var(--go)"], ["purch", "#4E8C6E"], ["subcon", "#16706B"], ["run", "#C6813A"],
+    ["planned", "var(--mark-green)"], ["prod", "var(--go)"], ["purch", "var(--mark-green2)"], ["subcon", "var(--teal-ink)"], ["run", "var(--mark-run)"],
   ];
 
   const line = rows.map((r, i) => `${i === 0 ? "M" : "L"} ${L + bw * (i + 0.5)} ${y(r.closing)}`).join(" ");
@@ -3015,146 +2146,6 @@ function DemandSupplyChart({ d }) {
 }
 
 /* Committed load plus this run's load against available hours */
-function CapacityChart({ c }) {
-  const rows = c.rows;
-  const W = 780, H = 210, L = 46, R = 52, T = 16, B = 32;
-  const pw = W - L - R, ph = H - T - B;
-  const top = Math.max(c.avail * 1.15, ...rows.map((r) => r.total), 1);
-  const noCap = c.avail <= 0;
-  const y = (v) => T + (1 - v / top) * ph;
-  const bw = pw / rows.length;
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="crc-svg" role="img"
-      aria-label={`Capacity load for ${c.id}`}>
-      {[0, c.avail / 2, c.avail].map((v, i) => (
-        <g key={i}>
-          <line x1={L} y1={y(v)} x2={W - R} y2={y(v)} stroke="var(--rule-soft)" />
-          <text x={L - 7} y={y(v) + 3.5} fontSize="10" textAnchor="end" fill="var(--ink3)"
-            className="crc-svg-mono">{Math.round(v)}</text>
-        </g>
-      ))}
-      {!noCap && (
-        <>
-          <line x1={L} y1={y(c.avail)} x2={W - R} y2={y(c.avail)} stroke="var(--stop)"
-            strokeWidth="1.5" strokeDasharray="4 3" />
-          <text x={W - R + 5} y={y(c.avail) + 3.5} fontSize="9.5" fill="var(--stop)">available</text>
-        </>
-      )}
-
-      {rows.map((r, i) => {
-        const x = L + bw * i + bw * 0.2, w = bw * 0.6;
-        const over = r.total > c.avail;
-        const capH = Math.min(r.committed, c.avail);
-        return (
-          <g key={r.label}>
-            <rect x={x} y={y(r.committed)} width={w} height={Math.max(y(0) - y(r.committed), 0)}
-              fill={over ? "#8FA8C0" : "var(--signal)"}>
-              <title>{r.label} committed {r.committed} h</title>
-            </rect>
-            {r.run > 0 && (
-              <rect x={x} y={y(r.total)} width={w} height={Math.max(y(r.committed) - y(r.total), 0)} fill="#C6813A">
-                <title>{r.label} this run {r.run} h</title>
-              </rect>
-            )}
-            {over && (
-              <rect x={x} y={y(r.total)} width={w} height={Math.max(y(c.avail) - y(r.total), 0)}
-                fill="none" stroke="var(--stop)" strokeWidth="1.5">
-                <title>{r.label} over by {r.over} h</title>
-              </rect>
-            )}
-            <text x={x + w / 2} y={y(r.total) - 5} fontSize="10" textAnchor="middle"
-              fill={over ? "var(--stop)" : "var(--ink3)"} className="crc-svg-mono">
-              {r.pct === null ? (r.total > 0 ? `${r.total} h` : "") : `${r.pct}%`}
-            </text>
-          </g>
-        );
-      })}
-      {rows.map((r, i) => (
-        <text key={r.label} x={L + bw * (i + 0.5)} y={H - 8} fontSize="10" textAnchor="middle"
-          fill="var(--ink3)" className="crc-svg-mono">{r.label}</text>
-      ))}
-    </svg>
-  );
-}
-
-/* Which order sits on which work centre, and when */
-function WorkCentreGantt({ centres, weeks, t0 }) {
-  const rows = [];
-  for (const c of centres) {
-    const lanes = [];
-    for (const d of [...c.drivers].sort((a, b) => a.start - b.start)) {
-      let li = lanes.findIndex((l) => l[l.length - 1].finish < d.start);
-      if (li < 0) { lanes.push([d]); li = lanes.length - 1; } else lanes[li].push(d);
-    }
-    if (!lanes.length) lanes.push([]);
-    lanes.forEach((l, i) => rows.push({ centre: c, lane: l, first: i === 0, laneCount: lanes.length }));
-  }
-  if (!rows.length) return null;
-
-  const start = weeks[0].from.getTime();
-  const end = weeks[weeks.length - 1].to.getTime() + DAY;
-  const span = end - start;
-  const W = 780, LEFT = 118, RIGHT = 12, ROW = 22, TOP = 30;
-  const pw = W - LEFT - RIGHT;
-  const H = TOP + rows.length * ROW + 26;
-  const x = (d) => LEFT + Math.min(1, Math.max(0, (d.getTime() - start) / span)) * pw;
-
-  const colour = (d) =>
-    d.kind === "this run" ? "#C6813A"
-    : d.kind === "planned" ? "#A9BCC9"
-    : d.kind === "planned firmed" ? "#7C97AC"
-    : d.missing ? "var(--stop)"
-    : d.released ? "var(--signal)"
-    : "#8FA8C0";
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="crc-svg" role="img"
-      aria-label="Production orders by work centre over time">
-      {weeks.map((w) => (
-        <g key={w.label}>
-          <line x1={x(w.from)} y1={TOP - 14} x2={x(w.from)} y2={H - 20} stroke="var(--rule-soft)" />
-          <text x={x(w.from) + 4} y={TOP - 17} fontSize="10" fill="var(--ink3)" className="crc-svg-mono">{w.label}</text>
-        </g>
-      ))}
-      <line x1={x(t0)} y1={TOP - 20} x2={x(t0)} y2={H - 20} stroke="var(--ink)" strokeWidth="1.5" strokeDasharray="3 2" />
-      <text x={x(t0) + 4} y={TOP - 23} fontSize="10" fill="var(--ink)">today</text>
-
-      {rows.map((r, i) => {
-        const y = TOP + i * ROW;
-        return (
-          <g key={r.centre.id + i}>
-            {r.first && (
-              <>
-                <line x1={4} y1={y - 3} x2={W - RIGHT} y2={y - 3} stroke="var(--rule)" />
-                <text x={LEFT - 8} y={y + 11} fontSize="10.5" textAnchor="end" fill="var(--ink)"
-                  className="crc-svg-mono">{r.centre.id}</text>
-                <text x={LEFT - 8} y={y + 21} fontSize="9" textAnchor="end" fill="var(--ink3)">
-                  {r.centre.avail} h/wk
-                </text>
-              </>
-            )}
-            {r.lane.map((d, j) => {
-              const x1 = x(d.start), x2 = Math.max(x(d.finish), x1 + 8);
-              const label = `${d.ref} · ${d.qty}`;
-              return (
-                <g key={j}>
-                  <rect x={x1} y={y + 2} width={x2 - x1} height="14" rx="2" fill={colour(d)}>
-                    <title>{d.ref} · {d.material} · {d.qty} units · {d.hours} h · {fmtDate(d.start)} to {fmtDate(d.finish)}{d.missing ? " · missing parts" : ""}</title>
-                  </rect>
-                  {x2 - x1 > label.length * 5.4 && (
-                    <text x={x1 + 5} y={y + 12.5} fontSize="9.5" fill="#fff" className="crc-svg-mono">{label}</text>
-                  )}
-                </g>
-              );
-            })}
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
 /* Built against shipped, week by week, with the running gap */
 function FlowChart({ flow, t0 }) {
   const rows = flow.rows;
@@ -3192,11 +2183,11 @@ function FlowChart({ flow, t0 }) {
         return (
           <g key={r.label}>
             <rect x={xb} y={y(r.out)} width={w} height={Math.max(y(0) - y(r.out), 0)}
-              fill={r.past ? "var(--go)" : "#8FBFA6"}>
+              fill={r.past ? "var(--go)" : "var(--mark-green)"}>
               <title>{r.label} built {r.out}</title>
             </rect>
             <rect x={xb + w + 2} y={y(r.ship)} width={w} height={Math.max(y(0) - y(r.ship), 0)}
-              fill={r.past ? "#7C97AC" : "#B4C6D2"}>
+              fill={r.past ? "var(--mark-1)" : "var(--mark-3)"}>
               <title>{r.label} shipped {r.ship}</title>
             </rect>
           </g>
@@ -3285,7 +2276,7 @@ function ConsumptionChart({ h }) {
         return (
           <g key={r.key}>
             <rect x={x} y={y(r.planned)} width={w} height={Math.max(y(0) - y(r.planned), 0)}
-              fill={r.current ? "#A9BCC9" : "var(--signal)"}>
+              fill={r.current ? "var(--mark-2)" : "var(--signal)"}>
               <title>{r.label} planned {fmtQty(r.planned, h.uom)}</title>
             </rect>
             {r.unplanned > 0 && (
@@ -3324,7 +2315,7 @@ function ConsumptionSpark({ h }) {
         return (
           <g key={r.key}>
             <rect x={x} y={y(r.planned)} width={w} height={Math.max(y(0) - y(r.planned), 0)}
-              fill={r.current ? "#A9BCC9" : "var(--signal)"} />
+              fill={r.current ? "var(--mark-2)" : "var(--signal)"} />
             {r.unplanned > 0 && (
               <rect x={x} y={y(r.total)} width={w} height={Math.max(y(r.planned) - y(r.total), 0)}
                 fill="var(--caution)" />
@@ -3342,31 +2333,38 @@ function ScheduleChain({ schedule, t0 }) {
   const first = Math.min(steps[0].d.getTime(), t0.getTime());
   const last = steps[steps.length - 1].d.getTime();
   const span = Math.max(last - first, 5 * DAY);
-  const W = 780, H = 108, L = 14, R = 14, Y = 62;
+  /* Side margins have to clear the widest label, and the labels at each end are
+     anchored inwards rather than centred — a centred "Create order by" on the
+     first step used to run off the left of the viewBox and get clipped. */
+  const W = 780, H = 116, L = 78, R = 78, Y = 66;
   const pw = W - L - R;
   const x = (d) => L + ((d.getTime() - first) / span) * pw;
+  const EDGE = 62;
+  const anchorAt = (px) => (px < EDGE ? "start" : px > W - EDGE ? "end" : "middle");
+  const labelX = (px) => (px < EDGE ? 2 : px > W - EDGE ? W - 2 : px);
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="crc-svg" role="img" aria-label="Backward schedule">
       <line x1={L} y1={Y} x2={W - R} y2={Y} stroke="var(--rule)" strokeWidth="2" />
       <line x1={x(schedule.needBy)} y1={Y - 4} x2={x(schedule.delivery)} y2={Y - 4}
         stroke="var(--signal)" strokeWidth="4" strokeLinecap="round" />
-      <line x1={x(t0)} y1={20} x2={x(t0)} y2={H - 14} stroke="var(--ink)" strokeWidth="1.5" strokeDasharray="3 2" />
-      <text x={x(t0)} y={16} fontSize="10" textAnchor="middle" fill="var(--ink)">today</text>
+      <line x1={x(t0)} y1={22} x2={x(t0)} y2={H - 14} stroke="var(--ink)" strokeWidth="1.5" strokeDasharray="3 2" />
+      <text x={labelX(x(t0))} y={16} fontSize="10" textAnchor={anchorAt(x(t0))} fill="var(--ink)">today</text>
 
       {steps.map((st, i) => {
         const key = st.k === "Production start" || st.k === "Customer delivery date";
         const up = i % 2 === 0;
         const ly = up ? Y - 16 : Y + 26;
         const late = st.d < t0;
+        const px = x(st.d);
         return (
           <g key={st.k}>
-            <circle cx={x(st.d)} cy={Y} r={key ? 5.5 : 3.5}
-              fill={late ? "var(--stop)" : key ? "var(--signal)" : "#fff"}
+            <circle cx={px} cy={Y} r={key ? 5.5 : 3.5}
+              fill={late ? "var(--stop)" : key ? "var(--signal)" : "var(--panel)"}
               stroke={late ? "var(--stop)" : "var(--signal)"} strokeWidth="1.8" />
-            <text x={x(st.d)} y={ly} fontSize="9.5" textAnchor="middle"
+            <text x={labelX(px)} y={ly} fontSize="9.5" textAnchor={anchorAt(px)}
               fill={late ? "var(--stop)" : "var(--ink2)"}>{st.k}</text>
-            <text x={x(st.d)} y={ly + (up ? -10 : 11)} fontSize="9.5" textAnchor="middle"
+            <text x={labelX(px)} y={ly + (up ? -10 : 11)} fontSize="9.5" textAnchor={anchorAt(px)}
               fill={late ? "var(--stop)" : "var(--ink3)"} className="crc-svg-mono">{fmtDate(st.d)}</text>
           </g>
         );
@@ -3378,7 +2376,7 @@ function ScheduleChain({ schedule, t0 }) {
 /* The summary as plain text, for pasting into an email or a meeting note */
 function summaryText({ summary, programme, t0, weeks, ai }) {
   const L = [];
-  L.push("COMPONENT READINESS AND CAPACITY REPORT");
+  L.push(`${APP_NAME.toUpperCase()} — COMPONENT READINESS AND CAPACITY REPORT`);
   L.push(`Generated ${fmtDateLong(t0)}`);
   L.push(`Plants ${programme.plants.join(", ")} · horizon ${weeks.length} weeks to ${fmtDateLong(weeks[weeks.length - 1].to)}`);
   L.push("");
@@ -3437,7 +2435,10 @@ function stockPicture(mat, plant, slocSet, rules, pool, held) {
   const blocked = cat("Blocked");
   const transit = cat("In transit");
   const staged = cat("Staged for dispatch");
-  const atVendor = (held || []).filter((v) => v.code === mat).reduce((a, v) => a + v.qty, 0);
+  // held can now span plants, so a row only counts against the plant that sent it
+  const atVendor = (held || [])
+    .filter((v) => v.code === mat && (v.plant == null || v.plant === plant))
+    .reduce((a, v) => a + v.qty, 0);
 
   const counted = SLOCS.filter((s) => slocSet.has(s.code)).reduce((a, s) => a + byLoc[s.code], 0);
   const excluded = SLOCS.filter((s) => !slocSet.has(s.code)).reduce((a, s) => a + byLoc[s.code], 0);
@@ -3488,24 +2489,23 @@ function ScrollTop() {
   );
 }
 
-/* Material entry: pick from the list or type a code that is not in it */
-function MaterialInput({ value, onChange, options, state }) {
+/* Material entry: type a code, or press F4 for the search help.
+   The old inline suggestion list is gone — F4 is the one way to browse. */
+function MaterialInput({ value, onChange, state, onF4 }) {
   const [text, setText] = useState(value);
-  const [open, setOpen] = useState(false);
   const picked = useRef(false);
 
   useEffect(() => { setText(value); }, [value]);
-
-  const q = text.trim().toUpperCase();
-  const matches = options
-    .filter((o) => !q || o.code.toUpperCase().includes(q) || o.desc.toUpperCase().includes(q))
-    .slice(0, 8);
 
   const commit = (v) => {
     const t = v.trim().toUpperCase();
     setText(t);
     if (t !== value) onChange(t);
-    setOpen(false);
+  };
+
+  const search = () => {
+    picked.current = true;
+    onF4((code) => { setText(code); if (code !== value) onChange(code); });
   };
 
   return (
@@ -3514,36 +2514,22 @@ function MaterialInput({ value, onChange, options, state }) {
         className={`crc-inline crc-combo-in ${state === "missing" ? "crc-combo-bad" : state === "nobom" ? "crc-combo-warn" : ""}`}
         value={text}
         spellCheck={false}
-        placeholder="Type a material or pick one"
-        onChange={(e) => { setText(e.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
+        placeholder="Code, or F4"
+        title="Type a material code, or press F4 to search"
+        onChange={(e) => setText(e.target.value)}
         onBlur={() => { if (picked.current) { picked.current = false; return; } commit(text); }}
         onKeyDown={(e) => {
+          if (e.key === "F4") { e.preventDefault(); search(); return; }
           if (e.key === "Enter") { commit(text); e.currentTarget.blur(); }
-          if (e.key === "Escape") { setText(value); setOpen(false); }
+          if (e.key === "Escape") { setText(value); e.currentTarget.blur(); }
         }}
       />
       <button
         className="crc-combo-toggle"
         tabIndex={-1}
-        title="Show materials"
-        onMouseDown={(e) => { e.preventDefault(); setOpen((o) => !o); }}
-      >▾</button>
-      {open && matches.length > 0 && (
-        <ul className="crc-combo-list">
-          {matches.map((o) => (
-            <li key={o.code}>
-              <button
-                onMouseDown={(e) => { e.preventDefault(); picked.current = true; commit(o.code); }}
-              >
-                <span className="crc-mono">{o.code}</span>
-                <span className="crc-combo-desc">{o.desc}</span>
-                <span className="crc-combo-kind">{o.kind}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+        title="Search materials (F4)"
+        onMouseDown={(e) => { e.preventDefault(); search(); }}
+      >F4</button>
     </div>
   );
 }
@@ -3723,14 +2709,800 @@ function Timeline({ t0, needBy, steps }) {
    MAIN
    ============================================================ */
 
-export default function ComponentReadinessCheck() {
+/* ============================================================
+   BRANDING AND THEME
+   ============================================================ */
+
+const APP_NAME = "PPC Dashboard";
+
+/* The InfraBeat wordmark. It is set in the page's own type rather than shipped
+   as an image so it stays sharp at any size and needs no asset to load. To use
+   the real artwork instead, point BRAND_LOGO_SRC at a file next to the page
+   (public/ for the Vite build, standalone/ for the single file build) and the
+   <img> replaces the wordmark. Brand colours sit on their own white plate so
+   they stay correct against the dark masthead in both themes. */
+const BRAND_LOGO_SRC = null;
+
+function BrandLogo() {
+  if (BRAND_LOGO_SRC) {
+    return <img className="crc-logo-img" src={BRAND_LOGO_SRC} alt="InfraBeat" />;
+  }
+  return (
+    <span className="crc-logo" role="img" aria-label="InfraBeat">
+      <span className="crc-logo-a">Infra</span><span className="crc-logo-b">Beat</span>
+    </span>
+  );
+}
+
+const THEME_KEY = "ppc-dashboard-theme";
+
+/* localStorage throws outright in some privacy modes, so every access is
+   guarded and simply falls back to the system preference. */
+function readStoredTheme() {
+  try {
+    const v = window.localStorage.getItem(THEME_KEY);
+    if (v === "light" || v === "dark") return v;
+  } catch (e) { /* storage unavailable */ }
+  try {
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) return "dark";
+  } catch (e) { /* matchMedia unavailable */ }
+  return "light";
+}
+
+function storeTheme(v) {
+  try { window.localStorage.setItem(THEME_KEY, v); } catch (e) { /* storage unavailable */ }
+}
+
+/* Capacity as a picture: one row per work centre, one cell per week, shaded by
+   how hard that week is loaded, with a peak bar on the right. It answers "where
+   is it tight and when" at a glance, without naming a single order. */
+function CapacityHeat({ centres, weeks }) {
+  if (!centres.length) return null;
+  const band = (pct) =>
+    pct === null ? "na" : pct > 100 ? "over" : pct > 90 ? "tight" : pct > 70 ? "busy" : pct > 0 ? "easy" : "idle";
+
+  return (
+    <div className="crc-heat">
+      <div className="crc-heat-grid" style={{ gridTemplateColumns: `minmax(170px,1.5fr) repeat(${weeks.length}, 1fr) 96px` }}>
+        <div className="crc-heat-h">Work centre</div>
+        {weeks.map((w) => <div key={w.label} className="crc-heat-h crc-heat-hc">{w.label}</div>)}
+        <div className="crc-heat-h crc-heat-hc">Peak</div>
+
+        {centres.map((c) => (
+          <React.Fragment key={c.id}>
+            <div className={c.unavailable ? "crc-heat-n crc-heat-off" : "crc-heat-n"}>
+              <span className="crc-mono">{c.id}</span>
+              <span className="crc-heat-sub">plant {c.plant} · {c.avail} h/wk</span>
+            </div>
+            {c.rows.map((r) => (
+              <div key={r.label} className={`crc-heat-c crc-heat-${band(r.pct)}`}
+                title={`${c.id} ${r.label}: ${r.pct === null ? "off line" : r.pct + "% of " + c.avail + " h"}${r.over > 0 ? `, ${r.over} h over` : ""}`}>
+                {r.pct === null ? "" : r.pct > 0 ? r.pct : ""}
+              </div>
+            ))}
+            <div className="crc-heat-peak">
+              <div className="crc-heat-bar">
+                <i className={`crc-heat-fill crc-heat-${band(c.peak)}`}
+                  style={{ width: `${Math.min(100, c.peak === null ? 0 : c.peak)}%` }} />
+              </div>
+              <span className={c.peak !== null && c.peak > 100 ? "crc-heat-pk crc-num-short" : "crc-heat-pk"}>
+                {c.peak === null ? "—" : `${c.peak}%`}
+              </span>
+            </div>
+          </React.Fragment>
+        ))}
+      </div>
+      <div className="crc-key">
+        <span><i className="crc-heat-sw crc-heat-easy" />Under 70%</span>
+        <span><i className="crc-heat-sw crc-heat-busy" />70 to 90%</span>
+        <span><i className="crc-heat-sw crc-heat-tight" />90 to 100%</span>
+        <span><i className="crc-heat-sw crc-heat-over" />Over capacity</span>
+        <span><i className="crc-heat-sw crc-heat-na" />Off line</span>
+      </div>
+    </div>
+  );
+}
+
+/* Twelve months of issues, with the part that had no order behind it picked out */
+function ConsumptionBars({ months, uom, mixed }) {
+  const W = 780, H = 230, L = 52, R = 16, T = 16, B = 44;
+  const pw = W - L - R, ph = H - T - B;
+  const top = Math.max(1, ...months.map((m) => m.total));
+  const bw = pw / months.length;
+  const y = (v) => T + (1 - v / top) * ph;
+  const ticks = [0, top / 2, top];
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="crc-svg" role="img"
+      aria-label={`Consumption over the last twelve months${mixed ? ", mixed units of measure" : ` in ${uom}`}`}>
+      {ticks.map((v, i) => (
+        <g key={i}>
+          <line x1={L} y1={y(v)} x2={W - R} y2={y(v)} stroke="var(--rule-soft)" strokeWidth="1" />
+          <text x={L - 8} y={y(v) + 3.5} fontSize="10" textAnchor="end" fill="var(--ink3)"
+            className="crc-svg-mono">{fmtQty(r3(v), mixed ? "EA" : uom)}</text>
+        </g>
+      ))}
+      {months.map((m, i) => {
+        const x = L + bw * i + bw * 0.18;
+        const w = bw * 0.64;
+        const hTot = Math.max(0, y(0) - y(m.total));
+        const hUnp = Math.max(0, y(0) - y(m.unplanned));
+        return (
+          <g key={m.key}>
+            <rect x={x} y={y(m.total)} width={w} height={hTot} rx="1"
+              fill={m.current ? "var(--mark-2)" : "var(--signal)"}>
+              <title>{m.label}: {fmtQty(m.total, mixed ? "" : uom)} issued{m.unplanned > 0 ? `, ${fmtQty(m.unplanned, mixed ? "" : uom)} with no order behind it` : ""}{m.current ? " (month still running)" : ""}</title>
+            </rect>
+            {m.unplanned > 0 && (
+              <rect x={x} y={y(m.unplanned)} width={w} height={hUnp} rx="1" fill="var(--caution)" opacity="0.95">
+                <title>{m.label}: {fmtQty(m.unplanned, mixed ? "" : uom)} unplanned</title>
+              </rect>
+            )}
+            <text x={x + w / 2} y={H - 24} fontSize="10" textAnchor="middle"
+              fill={m.current ? "var(--ink3)" : "var(--ink2)"} className="crc-svg-mono">{m.label}</text>
+            {m.current && (
+              <text x={x + w / 2} y={H - 11} fontSize="9" textAnchor="middle" fill="var(--ink3)">part month</text>
+            )}
+          </g>
+        );
+      })}
+      <line x1={L} y1={y(0)} x2={W - R} y2={y(0)} stroke="var(--rule)" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+/* One material's twelve months, small enough to sit in a table cell */
+function Sparkline({ values }) {
+  const W = 108, H = 26;
+  const top = Math.max(1, ...values);
+  const bw = W / values.length;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="crc-spark-svg" aria-hidden="true">
+      {values.map((v, i) => {
+        const h = Math.max(v > 0 ? 1.5 : 0, (v / top) * (H - 4));
+        return <rect key={i} x={i * bw + bw * 0.15} y={H - h} width={bw * 0.7} height={h} rx="0.8"
+          fill={i === values.length - 1 ? "var(--mark-2)" : "var(--signal)"} />;
+      })}
+    </svg>
+  );
+}
+
+/* ============================================================
+   DATA EXPORT
+
+   Everything on screen can leave as a workbook, a CSV or a PDF. The spreadsheet
+   reader already loaded for the database doubles as the writer; the PDF library
+   is only fetched if somebody actually asks for a PDF.
+   ============================================================ */
+
+const EXPORT_SECTIONS = [
+  { id: "run", label: "Planning run", note: "one row per line in the run" },
+  { id: "components", label: "Components", note: "the exploded bill for every line" },
+  { id: "shortages", label: "Shortages", note: "only the components that are short" },
+  { id: "demand", label: "Demand and supply", note: "opening, demand, supply and balance by material" },
+  { id: "capacity", label: "Capacity", note: "hours and load by work centre and week" },
+  { id: "stock", label: "Stock", note: "owned and issuable by material and plant" },
+  { id: "consumption", label: "Consumption history", note: "twelve monthly buckets per material" },
+  { id: "orders", label: "Purchase orders", note: "open inbound supply" },
+  { id: "prod", label: "Production orders", note: "what is on the floor" },
+  { id: "subcon", label: "Subcontracting", note: "orders and stock held at vendors" },
+  { id: "sales", label: "Sales and delivery risk", note: "order lines against the projected position" },
+  { id: "findings", label: "Summary findings", note: "the headline, key readings and findings" },
+];
+
+/* Rows are built as arrays so the same shape feeds a sheet, a CSV and a PDF table. */
+function buildExport(ctx, filters) {
+  const { t0, weeks, programme, runWide, consumption, commitments, shopFloor, subcon, summary,
+    horizonRules, included } = ctx;
+  const { plants, mats, fromISO, toISO: toISOv } = filters;
+
+  const from = fromISO ? new Date(fromISO + "T00:00:00") : null;
+  const to = toISOv ? new Date(toISOv + "T23:59:59") : null;
+  const inRange = (d) => !d || ((!from || d >= from) && (!to || d <= to));
+  const okPlant = (p) => !plants.length || plants.includes(p);
+  const okMat = (m) => !mats.length || mats.includes(m);
+
+  const out = {};
+
+  out.run = {
+    columns: ["Line", "Sales order", "Customer", "Material", "Description", "Quantity", "Plant",
+      "Customer wants", "Must start", "Buildable now", "Full kit", "Verdict"],
+    rows: programme.lines.filter((L) => okPlant(L.plant) && okMat(L.fg) && inRange(L.delivery)).map((L) => [
+      L.seq, L.so ? `${L.so.doc}/${L.so.item}` : "planner entry", L.so ? L.so.customer : "",
+      L.fg, matInfo(L.fg).desc, L.qty, L.plant,
+      fmtDate(L.delivery), L.master.ok ? fmtDate(L.needBy) : "",
+      L.master.ok ? Math.min(L.result.buildable, L.qty) : "",
+      L.master.ok && L.result.shortLines.length ? fmtDate(L.result.fullKit) : "on hand",
+      !L.master.ok ? "cannot explode" : L.result.verdict,
+    ]),
+  };
+
+  const compRows = [];
+  for (const L of programme.lines) {
+    if (!L.master.ok || !okPlant(L.plant)) continue;
+    for (const l of L.result.lines) {
+      if (!okMat(l.code)) continue;
+      compRows.push([L.seq, L.fg, L.plant, l.level, l.code, l.desc, l.uom, l.perFG, l.required,
+        l.onHand, l.reserved, l.available, l.shortage, l.lead,
+        l.coverage ? fmtDate(l.coverage) : "", l.status]);
+    }
+  }
+  const compCols = ["Line", "Finished good", "Plant", "BOM level", "Material", "Description", "UoM",
+    "Per unit", "Required", "On hand", "Open reservations", "Available", "Short", "Lead days",
+    "Covered by", "Status"];
+  out.components = { columns: compCols, rows: compRows };
+  out.shortages = { columns: compCols, rows: compRows.filter((r) => Number(r[12]) > 0) };
+
+  out.demand = {
+    columns: ["Material", "Description", "Plant", "UoM", "Opening", "Safety", "Demand", "Supply",
+      "Balance", "First shortage", "Cover days", "Status"],
+    rows: runWide.projection.filter((d) => okPlant(d.plant) && okMat(d.mat)).map((d) => [
+      d.mat, d.desc, d.plant, d.uom, d.opening, d.safety, d.totalDemand, d.totalSupply, d.balance,
+      d.firstShort ? `${d.firstShort.label} ${d.firstShort.date}` : "", d.coverDays == null ? "" : d.coverDays,
+      d.status,
+    ]),
+  };
+
+  out.capacity = {
+    columns: ["Work centre", "Description", "Plant", "Shifts", "Available h/week",
+      ...weeks.map((w) => w.label), "Peak %", "Hours over", "Status"],
+    rows: runWide.capacity.filter((c) => okPlant(c.plant)).map((c) => [
+      c.id, c.desc, c.plant, c.shifts, c.avail,
+      ...c.rows.map((r) => (r.pct == null ? "" : r.pct)),
+      c.peak == null ? "" : c.peak, c.totalOver,
+      c.unavailable ? "off line" : c.totalOver > 0 ? "overloaded" : "capacity available",
+    ]),
+  };
+
+  const stockPairs = [];
+  for (const d of runWide.projection) {
+    if (!okPlant(d.plant) || !okMat(d.mat)) continue;
+    if (!stockPairs.some((x) => x.m === d.mat && x.p === d.plant)) stockPairs.push({ m: d.mat, p: d.plant });
+  }
+  out.stock = {
+    columns: ["Material", "Description", "Plant", "UoM", "Owned", "Unrestricted", "Quality hold",
+      "Blocked", "In transit", "Staged", "At vendor", "Counted", "Reserved", "Issuable now"],
+    rows: stockPairs.map(({ m, p }) => {
+      const x = stockPicture(m, p, included, horizonRules, null, subcon.held);
+      return [m, x.desc, p, x.uom, x.totalOwned, x.unrestricted, x.quality, x.blocked, x.transit,
+        x.staged, x.atVendor, x.counted, x.reserved, x.issuableNow];
+    }),
+  };
+
+  const consRows = consumption.filter((c) => okPlant(c.plant) && okMat(c.mat));
+  out.consumption = {
+    columns: ["Material", "Description", "Plant", "UoM", ...(consRows[0] ? consRows[0].periods.map((p) => p.label) : []),
+      "Monthly average", "Peak", "Unplanned %", "Trend %", "Cover days", "Status"],
+    rows: consRows.map((c) => [
+      c.mat, c.desc, c.plant, c.uom, ...c.periods.map((p) => p.total),
+      c.avg, c.peak, c.unplannedShare, c.trend == null ? "" : c.trend,
+      c.coverDays == null ? "" : c.coverDays, c.status,
+    ]),
+  };
+
+  out.orders = {
+    columns: ["Document", "Item", "Type", "Material", "Plant", "Vendor", "Ordered", "Received",
+      "Open", "Due", "Overdue", "Raised by"],
+    rows: commitments.supply
+      .filter((s) => okPlant(s.plant || s.p) && okMat(s.m) && inRange(s.date))
+      .map((s) => [s.doc, s.item, s.type, s.m, s.plant || s.p, s.vendor, s.q, s.received,
+        s.openQty, fmtDate(s.date), s.date < t0 ? "yes" : "no", `${s.mode} ${s.createdBy}`]),
+  };
+
+  out.prod = {
+    columns: ["Order", "Material", "Plant", "Work centre", "Type", "Quantity", "Delivered",
+      "Confirmed", "Start", "Finish", "Status", "Raised by"],
+    rows: shopFloor.orders
+      .filter((o) => okPlant(o.plant) && okMat(o.material) && inRange(o.finish))
+      .map((o) => [o.order, o.material, o.plant, o.wc, o.type, o.qty, o.delivered, o.confirmed,
+        fmtDate(o.start), fmtDate(o.finish), (o.status || []).join(" "), `${o.mode} ${o.createdBy}`]),
+  };
+
+  out.subcon = {
+    columns: ["Document", "Item", "Plant", "Vendor", "Material", "Quantity", "Received", "Due",
+      "Service", "Component held", "Held quantity"],
+    rows: subcon.orders
+      .filter((s) => okPlant(s.plant) && inRange(s.date))
+      .flatMap((s) => {
+        const held = subcon.held.filter((h) => h.doc === s.doc && h.item === s.item);
+        if (!held.length) return [[s.doc, s.item, s.plant, s.vendor, s.material, s.q, s.received,
+          fmtDate(s.date), s.service, "", ""]];
+        return held.map((h) => [s.doc, s.item, s.plant, s.vendor, s.material, s.q, s.received,
+          fmtDate(s.date), s.service, h.code, h.qty]);
+      }),
+  };
+
+  out.sales = {
+    columns: ["Sales order", "Item", "Customer", "Material", "Plant", "Quantity", "Confirmed",
+      "Requested", "Can ship", "Days late", "Covered", "Why not"],
+    rows: runWide.risk
+      .filter((r) => okPlant(r.p) && okMat(r.material) && inRange(r.req))
+      .map((r) => [r.doc, r.item, r.customer, r.material, r.p, r.qty, r.confirmed,
+        fmtDate(r.req), r.expected ? fmtDate(r.expected) : (r.covered ? "on the date" : "beyond horizon"),
+        r.lateDays == null ? "" : r.lateDays, r.covered ? "yes" : "no", r.cause || ""]),
+  };
+
+  const findRows = [["Headline", summary.headline, ""]];
+  for (const s of summary.stats) findRows.push(["Key reading", `${s.k}: ${s.v}`, s.s]);
+  for (const i of summary.issues) {
+    findRows.push([i.sev, `${i.area}: ${i.headline}`, i.detail || ""]);
+  }
+  out.findings = { columns: ["Kind", "What", "Detail"], rows: findRows };
+
+  return out;
+}
+
+function safeSheetName(s) {
+  return s.replace(/[\[\]\*\?\/\\:]/g, " ").slice(0, 31);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function ExportDialog({ ctx, onClose, openF4, onPrint }) {
+  const [format, setFormat] = useState("xlsx");
+  const [picked, setPicked] = useState(() => new Set(["run", "components", "shortages", "findings"]));
+  const [plants, setPlants] = useState([]);
+  const [mats, setMats] = useState([]);
+  const [fromISO, setFromISO] = useState("");
+  const [toISOv, setToISOv] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const filters = { plants, mats, fromISO, toISO: toISOv };
+  const data = useMemo(() => buildExport(ctx, filters), [ctx, plants, mats, fromISO, toISOv]);
+  const chosen = EXPORT_SECTIONS.filter((s) => picked.has(s.id));
+  const totalRows = chosen.reduce((a, s) => a + ((data[s.id] && data[s.id].rows.length) || 0), 0);
+
+  const toggle = (id) => setPicked((s) => {
+    const n = new Set(s);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
+
+  const stamp = toISO(ctx.t0);
+  const filterLines = [
+    ["Generated", fmtDateLong(ctx.t0)],
+    ["Plants", plants.length ? plants.join(", ") : "all in the run"],
+    ["Materials", mats.length ? mats.join(", ") : "all in the run"],
+    ["Date range", fromISO || toISOv ? `${fromISO || "any"} to ${toISOv || "any"}` : "no limit"],
+    ["Sections", chosen.map((s) => s.label).join(", ")],
+  ];
+
+  const run = async () => {
+    if (!chosen.length) return;
+    setBusy(true); setError(null);
+    try {
+      if (format === "xlsx") {
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb,
+          XLSX.utils.aoa_to_sheet([[`${APP_NAME} export`], [], ...filterLines]), "About");
+        for (const s of chosen) {
+          const d = data[s.id];
+          XLSX.utils.book_append_sheet(wb,
+            XLSX.utils.aoa_to_sheet([d.columns, ...d.rows]), safeSheetName(s.label));
+        }
+        XLSX.writeFile(wb, `PPC-Dashboard-${stamp}.xlsx`);
+      } else if (format === "csv") {
+        // one file, sections separated by their own heading row
+        const parts = [`${APP_NAME} export`, ...filterLines.map((l) => l.join(": ")), ""];
+        for (const s of chosen) {
+          const d = data[s.id];
+          parts.push(`## ${s.label}`);
+          parts.push(XLSX.utils.sheet_to_csv(XLSX.utils.aoa_to_sheet([d.columns, ...d.rows])).trim());
+          parts.push("");
+        }
+        downloadBlob(new Blob(["﻿" + parts.join("\r\n")], { type: "text/csv;charset=utf-8" }),
+          `PPC-Dashboard-${stamp}.csv`);
+      } else {
+        /* PDF goes through the browser's own print dialog rather than a bundled
+           PDF library. The page renders the chosen sections as a print-only
+           document; the user picks "Save as PDF" as the destination. It needs no
+           extra download and no CDN, and the output uses the same type as the
+           screen. */
+        onPrint({
+          title: `${APP_NAME} — component readiness export`,
+          filterLines,
+          sections: chosen.map((s) => ({ label: s.label, ...data[s.id] })),
+        });
+      }
+      onClose();
+    } catch (e) {
+      setError((e && e.message) || String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="crc-f4wrap" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="crc-f4 crc-exp" role="dialog" aria-modal="true" aria-label="Export data">
+        <div className="crc-f4-top">
+          <div>
+            <div className="crc-f4-t">Export</div>
+            <div className="crc-f4-s">
+              Choose what to take, narrow it if you want, and pick a format. Filters travel with the
+              file so it says what it is.
+            </div>
+          </div>
+          <button className="crc-f4-x" onClick={onClose} aria-label="Close">esc</button>
+        </div>
+
+        <div className="crc-f4-body">
+          <div className="crc-exp-grid">
+            <div>
+              <div className="crc-exp-t">What to include</div>
+              <div className="crc-exp-secs">
+                {EXPORT_SECTIONS.map((s) => {
+                  const n = (data[s.id] && data[s.id].rows.length) || 0;
+                  return (
+                    <label key={s.id} className={n === 0 ? "crc-matpick-i crc-matpick-in" : "crc-matpick-i"}>
+                      <input type="checkbox" checked={picked.has(s.id)} disabled={n === 0}
+                        onChange={() => toggle(s.id)} />
+                      <span>
+                        <span className="crc-matcode">{s.label}</span>
+                        <span className="crc-matdesc">{n === 0 ? "nothing in this filter" : `${n} row${n === 1 ? "" : "s"} · ${s.note}`}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <div className="crc-exp-t">Narrow it</div>
+              <div className="crc-exp-field">
+                <span className="crc-pickfield-l">Plants</span>
+                <div className="crc-exp-chips">
+                  {PLANTS.map((p) => (
+                    <button key={p.id}
+                      className={plants.includes(p.id) ? "crc-seg-btn crc-seg-on crc-exp-chip" : "crc-seg-btn crc-exp-chip"}
+                      onClick={() => setPlants((x) => x.includes(p.id) ? x.filter((y) => y !== p.id) : [...x, p.id])}>
+                      {p.id}
+                    </button>
+                  ))}
+                  {plants.length > 0 && <button className="crc-linkbtn" onClick={() => setPlants([])}>all</button>}
+                </div>
+              </div>
+
+              <div className="crc-exp-field">
+                <span className="crc-pickfield-l">Materials</span>
+                <button className="crc-btn crc-btn-light"
+                  onClick={() => openF4({ mode: "multi", plant: plants.length === 1 ? plants[0] : "", initial: mats, title: "Materials to export" },
+                    (codes) => setMats(codes))}>
+                  {mats.length ? `${mats.length} selected` : "All materials"}
+                  <kbd className="crc-kbd2">F4</kbd>
+                </button>
+                {mats.length > 0 && <button className="crc-linkbtn" onClick={() => setMats([])}>all</button>}
+              </div>
+
+              <div className="crc-exp-field">
+                <span className="crc-pickfield-l">Date range</span>
+                <input type="date" className="crc-addso" value={fromISO} onChange={(e) => setFromISO(e.target.value)} />
+                <span className="crc-exp-to">to</span>
+                <input type="date" className="crc-addso" value={toISOv} onChange={(e) => setToISOv(e.target.value)} />
+                {(fromISO || toISOv) && (
+                  <button className="crc-linkbtn" onClick={() => { setFromISO(""); setToISOv(""); }}>clear</button>
+                )}
+              </div>
+              <div className="crc-exp-note">
+                The date range applies to rows that carry a date — purchase and production orders,
+                subcontracting, sales lines and the run itself. Master data and stock are not filtered by it.
+              </div>
+
+              <div className="crc-exp-t crc-exp-t2">Format</div>
+              <div className="crc-exp-formats">
+                {[["xlsx", "Excel", "one sheet per section, plus a sheet recording the filters"],
+                  ["csv", "CSV", "a single file, each section under its own heading"],
+                  ["pdf", "PDF", "opens the print dialog — choose Save as PDF as the destination"]].map(([k, label, note]) => (
+                  <label key={k} className={format === k ? "crc-matpick-i crc-exp-fmt crc-exp-fmt-on" : "crc-matpick-i crc-exp-fmt"}>
+                    <input type="radio" name="crc-exp-format" checked={format === k} onChange={() => setFormat(k)} />
+                    <span>
+                      <span className="crc-matcode">{label}</span>
+                      <span className="crc-matdesc">{note}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {error && <div className="crc-exp-err">{error}</div>}
+        </div>
+
+        <div className="crc-f4-foot">
+          <span>{chosen.length} section{chosen.length === 1 ? "" : "s"} · {totalRows} row{totalRows === 1 ? "" : "s"}</span>
+          <span className="crc-f4-foot-r">
+            <button className="crc-btn crc-btn-light" onClick={onClose}>Cancel</button>
+            <button className="crc-btn" disabled={!chosen.length || busy} onClick={run}>
+              {busy ? "Preparing…" : format === "pdf" ? "Print / Save as PDF" : `Export ${format.toUpperCase()}`}
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* The export rendered for paper. Hidden on screen, shown only to the printer. */
+function PrintDoc({ doc }) {
+  return (
+    <div className="crc-printdoc">
+      <h1 className="crc-pd-t">{doc.title}</h1>
+      <table className="crc-pd-meta">
+        <tbody>
+          {doc.filterLines.map(([k, v]) => (
+            <tr key={k}><th>{k}</th><td>{v}</td></tr>
+          ))}
+        </tbody>
+      </table>
+      {doc.sections.map((s) => (
+        <div key={s.label} className="crc-pd-sec">
+          <h2 className="crc-pd-h">{s.label}<span>{s.rows.length} row{s.rows.length === 1 ? "" : "s"}</span></h2>
+          <table className="crc-pd-table">
+            <thead>
+              <tr>{s.columns.map((c, i) => <th key={i}>{c}</th>)}</tr>
+            </thead>
+            <tbody>
+              {s.rows.map((r, i) => (
+                <tr key={i}>{r.map((v, j) => <td key={j}>{v == null ? "" : String(v)}</td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   F4 MATERIAL SEARCH
+
+   SAP habit: F4 on a field opens the search help, so every material field here
+   does the same. It searches the whole material master rather than only the
+   materials that carry a bill of material, filters by plant, and hands back a
+   single code or a set of them depending on how it was opened.
+   ============================================================ */
+
+function materialKind(code) {
+  if (FINISHED_GOODS.some((f) => f.code === code)) return "Finished good";
+  if (BOMS[code]) return "Sub-assembly";
+  return "Component";
+}
+
+function F4Dialog({ spec, onClose, onPick }) {
+  const multi = spec.mode === "multi";
+  const [q, setQ] = useState("");
+  const [plantFilter, setPlantFilter] = useState(spec.plant || "");
+  const [chosen, setChosen] = useState(() => new Set(spec.initial || []));
+  const [cursor, setCursor] = useState(0);
+  const inputRef = useRef(null);
+
+  useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, []);
+
+  const rows = useMemo(() => {
+    const term = q.trim().toUpperCase();
+    const out = [];
+    for (const code of Object.keys(MATERIALS)) {
+      const m = MATERIALS[code];
+      if (term && !(code.toUpperCase().includes(term) || (m.desc || "").toUpperCase().includes(term))) continue;
+      if (plantFilter) {
+        const known = STOCK.some((s) => s.m === code && s.p === plantFilter)
+          || FINISHED_GOODS.some((f) => f.code === code && f.plant === plantFilter)
+          || MRP_DATA.some((d) => d.m === code && d.p === plantFilter);
+        if (!known) continue;
+      }
+      const onHand = STOCK
+        .filter((s) => s.m === code && (!plantFilter || s.p === plantFilter))
+        .reduce((a, s) => a + s.q, 0);
+      out.push({ code, desc: m.desc, uom: m.uom, mrp: m.mrp, kind: materialKind(code), onHand });
+    }
+    /* The master is stored raw materials first, which buries every finished good
+       behind 180 components. A planner looks for what is sold before what goes
+       into it, so the list is ordered that way. */
+    const rank = { "Finished good": 0, "Sub-assembly": 1, Component: 2 };
+    return out.sort((a, b) => (rank[a.kind] - rank[b.kind]) || a.code.localeCompare(b.code));
+  }, [q, plantFilter]);
+
+  useEffect(() => { setCursor(0); }, [q, plantFilter]);
+
+  const take = (code) => {
+    if (multi) {
+      setChosen((s) => {
+        const n = new Set(s);
+        if (n.has(code)) n.delete(code); else n.add(code);
+        return n;
+      });
+    } else {
+      onPick(code);
+    }
+  };
+
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
+    if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, rows.length - 1)); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => Math.max(c - 1, 0)); return; }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (rows[cursor]) take(rows[cursor].code);
+      else if (multi && chosen.size) onPick([...chosen]);
+    }
+  };
+
+  return (
+    <div className="crc-f4wrap" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="crc-f4" role="dialog" aria-modal="true" aria-label={spec.title || "Material search"} onKeyDown={onKey}>
+        <div className="crc-f4-top">
+          <div>
+            <div className="crc-f4-t">{spec.title || "Material search"}</div>
+            <div className="crc-f4-s">
+              {multi ? "Tick every material you want, then use the selection." : "Pick a material to fill the field."}
+              {" "}Search runs over the material master.
+            </div>
+          </div>
+          <button className="crc-f4-x" onClick={onClose} aria-label="Close">esc</button>
+        </div>
+
+        <div className="crc-f4-filters">
+          <input
+            ref={inputRef}
+            className="crc-f4-q"
+            value={q}
+            spellCheck={false}
+            placeholder="Material code or description…"
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <label className="crc-pickfield">
+            <span className="crc-pickfield-l">Plant</span>
+            <select className="crc-addso" value={plantFilter} onChange={(e) => setPlantFilter(e.target.value)}>
+              <option value="">All plants</option>
+              {PLANTS.map((p) => <option key={p.id} value={p.id}>{p.id} · {p.name}</option>)}
+            </select>
+          </label>
+          <span className="crc-f4-count">
+            {rows.length} of {Object.keys(MATERIALS).length}
+            {multi && chosen.size > 0 && ` · ${chosen.size} selected`}
+          </span>
+        </div>
+
+        <div className="crc-f4-body">
+          {rows.length === 0 ? (
+            <div className="crc-f4-none">Nothing in the material master matches “{q}”.</div>
+          ) : (
+            <table className="crc-table crc-f4-table">
+              <thead>
+                <tr>
+                  {multi && <th className="crc-th-count">Use</th>}
+                  <th className="crc-th-mat">Material</th>
+                  <th>Type</th>
+                  <th>UoM</th>
+                  <th>MRP</th>
+                  <th className="crc-num">On hand{plantFilter ? ` at ${plantFilter}` : ""}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr
+                    key={r.code}
+                    className={i === cursor ? "crc-prog-on" : ""}
+                    onMouseEnter={() => setCursor(i)}
+                    onClick={() => take(r.code)}
+                    style={{ cursor: "pointer" }}
+                  >
+                    {multi && (
+                      <td className="crc-th-count">
+                        <label className="crc-mark" onClick={(e) => e.stopPropagation()}>
+                          <input type="checkbox" checked={chosen.has(r.code)} onChange={() => take(r.code)} />
+                        </label>
+                      </td>
+                    )}
+                    <td className="crc-th-mat">
+                      <div className="crc-matcode">{r.code}</div>
+                      <div className="crc-matdesc">{r.desc}</div>
+                    </td>
+                    <td>{r.kind}</td>
+                    <td className="crc-mono">{r.uom}</td>
+                    <td className="crc-mono">{r.mrp}</td>
+                    <td className="crc-num">{r.onHand > 0 ? fmtQty(r.onHand, r.uom) : <span className="crc-dim">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="crc-f4-foot">
+          <span><kbd className="crc-kbd2">↑</kbd><kbd className="crc-kbd2">↓</kbd> move</span>
+          <span><kbd className="crc-kbd2">↵</kbd> {multi ? "tick" : "choose"}</span>
+          <span><kbd className="crc-kbd2">esc</kbd> close</span>
+          {multi && (
+            <span className="crc-f4-foot-r">
+              {chosen.size > 0 && (
+                <button className="crc-linkbtn" onClick={() => setChosen(new Set())}>clear</button>
+              )}
+              <button className="crc-btn" disabled={!chosen.size} onClick={() => onPick([...chosen])}>
+                Use {chosen.size || ""} material{chosen.size === 1 ? "" : "s"}
+              </button>
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReadinessDashboard() {
   const t0 = today();
 
-  const [demand, setDemand] = useState(() => [
-    { key: 1, so: "45000874/20", fg: "FG-PUMP-100", qty: 18, plant: "1000", version: "AUTO", deliveryISO: toISO(addDays(t0, 19)) },
-    { key: 2, so: "45000878/10", fg: "FG-PUMP-100", qty: 15, plant: "1000", version: "AUTO", deliveryISO: toISO(addDays(t0, 26)) },
-    { key: 3, so: "45000889/20", fg: "FG-GEAR-200", qty: 14, plant: "1100", version: "AUTO", deliveryISO: toISO(addDays(t0, 30)) },
-  ]);
+  /* Theme is remembered per browser and falls back to the operating system
+     preference on a machine that has never set it. */
+  const [theme, setTheme] = useState(readStoredTheme);
+  useEffect(() => { storeTheme(theme); }, [theme]);
+
+  /* Paper is white whatever the screen is set to. Rather than restate the whole
+     light palette inside the print rules, drop back to the light theme for the
+     duration of the print job and restore afterwards. */
+  const [printing, setPrinting] = useState(false);
+  useEffect(() => {
+    const before = () => setPrinting(true);
+    const after = () => setPrinting(false);
+    window.addEventListener("beforeprint", before);
+    window.addEventListener("afterprint", after);
+    return () => {
+      window.removeEventListener("beforeprint", before);
+      window.removeEventListener("afterprint", after);
+    };
+  }, []);
+
+  /* The opening run is seeded from real sales order lines rather than fixed
+     codes, so regenerating the workbook cannot leave it pointing at a material
+     or plant that no longer exists. Three different finished goods, each still
+     ahead of its requested date. */
+  const [demand, setDemand] = useState(() => {
+    const rows = [];
+    const seenMat = [];
+    const seenPlant = [];
+    const take = (s) => {
+      seenMat.push(s.m);
+      seenPlant.push(s.p);
+      rows.push({
+        key: rows.length + 1, so: `${s.doc}/${s.item}`, fg: s.m, qty: s.qty,
+        plant: s.p, version: "AUTO", deliveryISO: toISO(addDays(t0, s.reqOffset)),
+      });
+    };
+    const usable = SALES_ORDERS.filter((s) => s.reqOffset >= 7 && BOMS[s.m]);
+    // Two different plants, so the plant-keyed screens change when the scope
+    // widens to the whole run, then a second line back on the first plant so
+    // there is something for the contention screen to arbitrate.
+    for (const s of usable) {
+      if (rows.length >= 2) break;
+      if (seenMat.includes(s.m) || seenPlant.includes(s.p)) continue;
+      take(s);
+    }
+    for (const s of usable) {
+      if (rows.length >= 3) break;
+      if (seenMat.includes(s.m) || s.p !== seenPlant[0]) continue;
+      take(s);
+    }
+    for (const s of usable) {
+      if (rows.length >= 3) break;
+      if (seenMat.includes(s.m)) continue;
+      take(s);
+    }
+    if (rows.length) return rows;
+    return FINISHED_GOODS.slice(0, 3).map((f, i) => ({
+      key: i + 1, so: null, fg: f.code, qty: f.defaultQty,
+      plant: f.plant, version: "AUTO", deliveryISO: toISO(addDays(t0, 21)),
+    }));
+  });
   const [selected, setSelected] = useState(0);
 
   const [resPolicy, setResPolicy] = useState("all");
@@ -3796,24 +3568,89 @@ export default function ComponentReadinessCheck() {
   const profile = sel.profile;
 
   const patchLine = (key, patch) => {
-    setDemand((d) => d.map((x) => (x.key === key ? { ...x, ...patch } : x)));
+    setDemand((d) => d.map((x) => {
+      if (x.key !== key) return x;
+      const next = { ...x, ...patch };
+      /* A line that no longer builds the order's material is not that order's
+         line any more. Without this the row kept the old customer and document
+         after the material was changed, which is the one thing on the screen
+         that would still be describing the previous selection. */
+      if (next.so && Object.prototype.hasOwnProperty.call(patch, "fg")) {
+        const so = SALES_ORDERS.find((s) => `${s.doc}/${s.item}` === next.so);
+        if (!so || so.m !== next.fg) next.so = null;
+      }
+      return next;
+    }));
     setAiPlan(null);
     setExpanded(null);
+    // the charted material is pinned by code, so unpin it when the line changes
+    setDsPick(null);
   };
   const nextKey = () => Math.max(0, ...demand.map((x) => x.key)) + 1;
-  const addLine = () => {
-    const fresh = FINISHED_GOODS.find((f) => !demand.some((d) => d.fg === f.code)) || FINISHED_GOODS[0];
-    setDemand((d) => [...d, { key: nextKey(), so: null, fg: fresh.code, qty: fresh.defaultQty, plant: fresh.plant, version: "AUTO", deliveryISO: toISO(addDays(t0, 21)) }]);
-    setAiPlan(null);
+
+  /* The run is built from material and plant combinations. Pick a plant, tick as
+     many materials as you want, and each one becomes a line. A combination
+     already in the run is skipped rather than duplicated, since two lines for the
+     same material at the same plant would just compete with each other. */
+  const [addPlant, setAddPlant] = useState(() => (PLANTS[0] && PLANTS[0].id) || "");
+  const [addMats, setAddMats] = useState(() => new Set());
+
+  /* One F4 dialog serves every material field on every screen. The caller says
+     what it wants back and the callback lives in a ref, so reopening it from a
+     different field cannot fire a stale handler. */
+  const [exportOpen, setExportOpen] = useState(false);
+  /* Holding the export as a print-only document, printing it, then dropping it */
+  const [printDoc, setPrintDoc] = useState(null);
+  useEffect(() => {
+    if (!printDoc) return;
+    const id = window.setTimeout(() => { window.print(); setPrintDoc(null); }, 80);
+    return () => window.clearTimeout(id);
+  }, [printDoc]);
+  const [f4, setF4] = useState(null);
+  const f4Cb = useRef(null);
+  const openF4 = useCallback((opts, cb) => { f4Cb.current = cb; setF4(opts); }, []);
+  const closeF4 = useCallback(() => { f4Cb.current = null; setF4(null); }, []);
+  const pickF4 = useCallback((value) => {
+    const cb = f4Cb.current;
+    f4Cb.current = null;
+    setF4(null);
+    if (cb) cb(value);
+  }, []);
+
+  const toggleAddMat = (code) => {
+    setAddMats((s) => {
+      const n = new Set(s);
+      if (n.has(code)) n.delete(code); else n.add(code);
+      return n;
+    });
   };
-  /* Taking a line from a sales order brings its material, plant, quantity and delivery date */
-  const addFromSO = (ref) => {
-    const so = SALES_ORDERS.find((x) => `${x.doc}/${x.item}` === ref);
-    if (!so) return;
-    setDemand((d) => [...d, {
-      key: nextKey(), so: ref, fg: so.m, qty: so.qty, plant: so.p, version: "AUTO",
-      deliveryISO: toISO(addDays(t0, so.reqOffset)),
-    }]);
+
+  const alreadyInRun = (code, p) => demand.some((x) => x.fg === code && x.plant === p);
+
+  const addSelected = () => {
+    if (!addMats.size || !addPlant) return;
+    /* Listed materials keep the order they are shown in, and anything typed in by
+       hand that is not on that list follows. Order is priority in the run. */
+    const ordered = MATERIAL_OPTIONS.map((o) => o.code).filter((c) => addMats.has(c));
+    for (const c of addMats) if (!ordered.includes(c)) ordered.push(c);
+
+    setDemand((d) => {
+      let k = Math.max(0, ...d.map((x) => x.key));
+      const next = [...d];
+      for (const code of ordered) {
+        if (next.some((x) => x.fg === code && x.plant === addPlant)) continue;
+        const fg = FINISHED_GOODS.find((f) => f.code === code && f.plant === addPlant)
+          || FINISHED_GOODS.find((f) => f.code === code);
+        next.push({
+          key: ++k, so: null, fg: code,
+          qty: (fg && fg.defaultQty) || 10,
+          plant: addPlant, version: "AUTO",
+          deliveryISO: toISO(addDays(t0, 21)),
+        });
+      }
+      return next;
+    });
+    setAddMats(new Set());
     setAiPlan(null);
   };
   const attachSO = (key, ref) => {
@@ -3878,46 +3715,13 @@ export default function ComponentReadinessCheck() {
     [result]
   );
 
-  // everything competing with this order: open reservations and supply already pegged by MRP
-  const commitments = useMemo(() => {
-    const rules = { t0, needBy, resPolicy, excludePegged };
-    const resv = [];
-    const supply = [];
-    for (const m of touched) {
-      for (const r of openReservations(m, plant, t0)) {
-        const counted =
-          resPolicy === "none" ? false : resPolicy === "horizon" ? r.date <= needBy : true;
-        resv.push({ ...r, uom: MATERIALS[m].uom, counted });
-      }
-      for (const s of allSupply(m, plant, rules)) supply.push({ ...s, uom: MATERIALS[s.m].uom });
-    }
-    resv.sort((a, b) => a.date - b.date);
-    supply.sort((a, b) => a.date - b.date);
-    return { resv, supply };
-  }, [touched, plant, resPolicy, excludePegged, needBy, t0]);
-
-  const shopFloor = useMemo(() => {
-    const rules = { t0, needBy, resPolicy, excludePegged };
-    return {
-      orders: prodOrders(plant, rules),
-      moves: goodsMovements(plant, rules, null),
-    };
-  }, [plant, needBy, resPolicy, excludePegged, t0]);
-
-  const subcon = useMemo(() => {
-    const rules = { t0, needBy, resPolicy, excludePegged };
-    return { orders: subconOrders(plant, rules), held: vendorStockAll(plant, rules) };
-  }, [plant, needBy, resPolicy, excludePegged, t0]);
-
-  const horizonRules = useMemo(
-    () => ({ t0, needBy, resPolicy, excludePegged, batchOut, wcOut }),
-    [t0, needBy, resPolicy, excludePegged, batchOut, wcOut]
-  );
-
   const [dsPick, setDsPick] = useState(null);
   const [scope, setScope] = useState("line");
   /* Everything below the run follows the finished good selected above,
-     unless the planner widens it to the whole run. */
+     unless the planner widens it to the whole run. This block sits above the
+     per-screen data because the reference screens read from it too — they used
+     to key off the selected line alone, which is why Whole run appeared to do
+     nothing on Production orders, Purchase orders and Subcontracting. */
   const scopeMats = useMemo(() => {
     const src = scope === "line" ? [sel] : programme.lines;
     const seen = [];
@@ -3928,6 +3732,71 @@ export default function ComponentReadinessCheck() {
     }
     return seen;
   }, [scope, sel, programme]);
+
+  // everything competing with the run in scope: open reservations and supply already pegged by MRP
+  const commitments = useMemo(() => {
+    const rules = { t0, needBy, resPolicy, excludePegged };
+    const resv = [];
+    const supply = [];
+    const seenResv = new Set();
+    const seenSupply = new Set();
+    for (const { m, p } of scopeMats) {
+      for (const r of openReservations(m, p, t0)) {
+        const k = `${r.id}|${m}|${p}`;
+        if (seenResv.has(k)) continue;
+        seenResv.add(k);
+        const counted =
+          resPolicy === "none" ? false : resPolicy === "horizon" ? r.date <= needBy : true;
+        resv.push({ ...r, plant: p, uom: MATERIALS[m].uom, counted });
+      }
+      for (const s of allSupply(m, p, rules)) {
+        const k = `${s.doc}|${s.item}|${s.m}|${p}`;
+        if (seenSupply.has(k)) continue;
+        seenSupply.add(k);
+        supply.push({ ...s, plant: p, uom: MATERIALS[s.m].uom });
+      }
+    }
+    resv.sort((a, b) => a.date - b.date);
+    supply.sort((a, b) => a.date - b.date);
+    return { resv, supply };
+  }, [scopeMats, resPolicy, excludePegged, needBy, t0]);
+
+  const scopePlantList = useMemo(
+    () => [...new Set(scopeMats.map((x) => x.p))],
+    [scopeMats]
+  );
+
+  const shopFloor = useMemo(() => {
+    const rules = { t0, needBy, resPolicy, excludePegged };
+    const plants = scopePlantList.length ? scopePlantList : [plant];
+    return {
+      orders: plants.flatMap((pl) => prodOrders(pl, rules)),
+      moves: plants.flatMap((pl) => goodsMovements(pl, rules, null)),
+    };
+  }, [scopePlantList, plant, needBy, resPolicy, excludePegged, t0]);
+
+  const subcon = useMemo(() => {
+    const rules = { t0, needBy, resPolicy, excludePegged };
+    const plants = scopePlantList.length ? scopePlantList : [plant];
+    return {
+      orders: plants.flatMap((pl) => subconOrders(pl, rules)),
+      held: plants.flatMap((pl) => vendorStockAll(pl, rules)),
+    };
+  }, [scopePlantList, plant, needBy, resPolicy, excludePegged, t0]);
+
+  const horizonRules = useMemo(
+    () => ({ t0, needBy, resPolicy, excludePegged, batchOut, wcOut }),
+    [t0, needBy, resPolicy, excludePegged, batchOut, wcOut]
+  );
+
+  /* Contention is a property of the whole run - it is the competition between
+     lines - but the screen has to answer the question the toggle asks. Whole run
+     shows every contended component; This material narrows to the ones the
+     selected line is actually fighting for. */
+  const contendedInScope = useMemo(
+    () => (scope === "run" ? contended : contended.filter((c) => c.rows.some((r) => r.seq === sel.seq))),
+    [scope, contended, sel]
+  );
 
   const scopeFGs = useMemo(() => scopeMats.filter((x) => x.isFG), [scopeMats]);
   const scopePlants = useMemo(() => [...new Set(scopeMats.map((x) => x.p))], [scopeMats]);
@@ -3970,52 +3839,65 @@ export default function ComponentReadinessCheck() {
   );
   const bookSplit = useMemo(() => orderBookSplit(risk, scopeFGs, horizonRules), [risk, scopeFGs, horizonRules]);
 
+  /* Stock is asked a different question from the rest of the run, so it carries
+     its own scope on two axes: which materials (just the selected line, or every
+     line in the run) and which plants (the line's plant, or all of them). Both
+     controls sit on the Stock screen and the tables below read from this. */
+  const [stockAllPlants, setStockAllPlants] = useState(false);
+  const stockScope = useMemo(() => {
+    const mats = [];
+    for (const x of scopeMats) if (!mats.includes(x.m)) mats.push(x.m);
+    if (!stockAllPlants) return mats.map((m) => ({ m, p: plant }));
+    const pairs = [];
+    for (const m of mats) {
+      // across all plants, list a material only where it actually holds a position
+      const ps = PLANTS.map((x) => x.id).filter((p) => STOCK.some((r) => r.m === m && r.p === p && r.q > 0));
+      if (!ps.length) pairs.push({ m, p: plant });
+      else for (const p of ps) pairs.push({ m, p });
+    }
+    return pairs;
+  }, [scopeMats, stockAllPlants, plant]);
+
   const batchesInScope = useMemo(
-    () => touched.filter(isBatchManaged).flatMap((m) => batchRows(m, plant, horizonRules)),
-    [touched, plant, horizonRules]
+    () => stockScope.filter((x) => isBatchManaged(x.m)).flatMap((x) => batchRows(x.m, x.p, horizonRules)),
+    [stockScope, horizonRules]
   );
   const [copied, setCopied] = useState(false);
-  /* Consumption history stands on its own: the planner picks a plant, then adds the
-     materials they want to look at. It is not scoped by the finished good selected above,
-     because usage is a property of the material and the plant, not of one order. */
-  const materialsWithHistory = (pl) =>
-    CONSUMPTION.filter((c) => c.p === pl).map((c) => c.m).sort();
+  /* Consumption history stands on its own: usage is a property of the material
+     and the plant, not of one order, so it is filtered rather than scoped. The
+     default is everything with history, across every plant. */
+  const [consPlantSel, setConsPlantSel] = useState("");   // "" = all plants
+  const [consMatSel, setConsMatSel] = useState([]);       // [] = every material with history
 
-  const [consPlant, setConsPlant] = useState(() => (FINISHED_GOODS[0] && FINISHED_GOODS[0].plant) || PLANTS[0].id);
-  const [consMats, setConsMats] = useState(() => materialsWithHistory((FINISHED_GOODS[0] && FINISHED_GOODS[0].plant) || PLANTS[0].id));
-  const [consPick, setConsPick] = useState(null);
+  const consumption = useMemo(() => {
+    const plants = consPlantSel ? [consPlantSel] : PLANTS.map((p) => p.id);
+    const out = [];
+    for (const p of plants) {
+      for (const rec of CONSUMPTION.filter((c) => c.p === p)) {
+        if (consMatSel.length && !consMatSel.includes(rec.m)) continue;
+        const h = consumptionHistory(rec.m, p, horizonRules, included, null);
+        if (h) out.push({ ...h, key: `${h.mat}|${h.plant}` });
+      }
+    }
+    return out.sort((a, b) =>
+      (a.status === b.status ? b.sum - a.sum : a.status === "late" ? -1 : b.status === "late" ? 1 : a.status === "risk" ? -1 : 1));
+  }, [consPlantSel, consMatSel, horizonRules, included]);
 
-  const consAvailable = useMemo(() => materialsWithHistory(consPlant), [consPlant]);
-  const consOptions = useMemo(
-    () => consAvailable
-      .filter((m) => !consMats.includes(m))
-      .map((code) => ({ code, desc: matInfo(code).desc, kind: `plant ${consPlant}` })),
-    [consAvailable, consMats, consPlant]
-  );
-
-  const pickConsPlant = (pl) => {
-    setConsPlant(pl);
-    setConsMats(materialsWithHistory(pl));
-    setConsPick(null);
-  };
-  const addConsMaterial = (code) => {
-    const c = code.trim().toUpperCase();
-    if (!consAvailable.includes(c)) return;
-    setConsMats((x) => (x.includes(c) ? x : [...x, c]));
-    setConsPick(`${c}|${consPlant}`);
-  };
-  const removeConsMaterial = (code) =>
-    setConsMats((x) => x.filter((m) => m !== code));
-
-  const consumption = useMemo(
-    () => consMats
-      .map((m) => consumptionHistory(m, consPlant, horizonRules, included, null))
-      .filter(Boolean)
-      .map((c) => ({ ...c, key: `${c.mat}|${c.plant}` }))
-      .sort((a, b) => (a.status === b.status ? b.avg - a.avg : a.status === "late" ? -1 : b.status === "late" ? 1 : a.status === "risk" ? -1 : 1)),
-    [consMats, consPlant, horizonRules, included]
-  );
-  const consSel = consumption.find((c) => c.key === consPick) || consumption[0] || null;
+  /* Twelve monthly buckets summed over whatever is in the filter. Materials can
+     carry different units, so the chart says so rather than pretending the
+     total is one number with one meaning. */
+  const consChart = useMemo(() => {
+    const months = monthsBack(t0, 12);
+    const uoms = [...new Set(consumption.map((c) => c.uom))];
+    return {
+      uoms,
+      months: months.map((mo, i) => ({
+        ...mo,
+        total: r3(consumption.reduce((a, c) => a + ((c.periods[i] && c.periods[i].total) || 0), 0)),
+        unplanned: r3(consumption.reduce((a, c) => a + ((c.periods[i] && c.periods[i].unplanned) || 0), 0)),
+      })),
+    };
+  }, [consumption, t0]);
 
   const runWide = useMemo(() => {
     const seen = [];
@@ -4058,12 +3940,11 @@ export default function ComponentReadinessCheck() {
     flow: null,
     components: result.lines.length,
     shortages: result.shortLines.length,
-    contention: contended.length,
+    contention: contendedInScope.length,
     prod: shopFloor.orders.filter((o) => !o.complete).length,
     orders: commitments.supply.filter((s) => s.openQty > 0).length,
     subcon: subcon.held.length,
     consumption: consumption.filter((c) => c.status !== "ok").length || null,
-    sap: SAP_SOURCES.length,
   }[k] ?? null);
 
   /* ---------- Claude API: briefing over the whole run ---------- */
@@ -4307,17 +4188,42 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
   const kitDays = diffDays(result.fullKit, t0);
 
   return (
-    <div className="crc-root">
+    <div className={printDoc ? "crc-root crc-printing" : "crc-root"} data-theme={printing || printDoc ? "light" : theme}>
       <style>{CSS}</style>
+
+      {f4 && <F4Dialog spec={f4} onClose={closeF4} onPick={pickF4} />}
+      {printDoc && <PrintDoc doc={printDoc} />}
+      {exportOpen && (
+        <ExportDialog
+          ctx={{ t0, weeks, programme, runWide, consumption, commitments, shopFloor, subcon,
+            summary, horizonRules, included }}
+          openF4={openF4}
+          onPrint={(d) => { setExportOpen(false); setPrintDoc(d); }}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
 
       <header className="crc-header">
         <div className="crc-header-in">
           <div className="crc-brand">
-            <span className="crc-brand-mark" aria-hidden="true" />
+            <BrandLogo />
             <div>
-              <div className="crc-brand-name">Component readiness</div>
+              <div className="crc-brand-name">{APP_NAME}</div>
               <div className="crc-brand-sub">Can this run start, and what is stopping it</div>
             </div>
+          </div>
+
+          <div className="crc-headtools">
+            <button
+              type="button"
+              className="crc-themebtn"
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              aria-pressed={theme === "dark"}
+              title={theme === "dark" ? "Switch to the light theme" : "Switch to the dark theme"}
+            >
+              <span aria-hidden="true">{theme === "dark" ? "☀" : "☽"}</span>
+              <span className="crc-sr">{theme === "dark" ? "Light theme" : "Dark theme"}</span>
+            </button>
           </div>
 
           <div className={`crc-state crc-state-${summary.state}`}>
@@ -4348,13 +4254,6 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
               {summary.counts.critical > 0 && <span className="crc-sumbadge">{summary.counts.critical}</span>}
             </button>
           </div>
-        </div>
-        <div className="crc-header-strip">
-          <span>{programme.lines.length} line{programme.lines.length > 1 ? "s" : ""}</span>
-          <span>plant{programme.plants.length > 1 ? "s" : ""} {programme.plants.join(", ")}</span>
-          <span>viewing {fgCode}</span>
-          <span>{weeks.length}-week horizon</span>
-          <span className="crc-header-date">checked {fmtDateLong(t0)}</span>
         </div>
       </header>
 
@@ -4406,15 +4305,27 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                 </p>
               </div>
               <div className="crc-prog-actions">
-                <select className="crc-addso" value="" onChange={(e) => { addFromSO(e.target.value); e.target.value = ""; }}>
-                  <option value="">Add from a sales order…</option>
-                  {SALES_ORDERS.filter((o) => !demand.some((d) => d.so === `${o.doc}/${o.item}`)).map((o) => (
-                    <option key={o.doc + o.item} value={`${o.doc}/${o.item}`}>
-                      {o.doc}/{o.item} · {o.m} · {o.qty} · {fmtDate(addDays(t0, o.reqOffset))} · {o.customer}
-                    </option>
-                  ))}
-                </select>
-                <button className="crc-btn crc-btn-light" onClick={addLine}>Add without an order</button>
+                <label className="crc-pickfield">
+                  <span className="crc-pickfield-l">Plant</span>
+                  <select className="crc-addso" value={addPlant} onChange={(e) => setAddPlant(e.target.value)}>
+                    {PLANTS.map((p) => (
+                      <option key={p.id} value={p.id}>{p.id} · {p.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="crc-btn crc-btn-light"
+                  onClick={() => openF4(
+                    { mode: "multi", plant: addPlant, initial: [...addMats], title: `Materials to plan at plant ${addPlant}` },
+                    (codes) => setAddMats(new Set(codes))
+                  )}
+                >
+                  {addMats.size ? `${addMats.size} material${addMats.size > 1 ? "s" : ""} selected` : "Choose materials"}
+                  <kbd className="crc-kbd2">F4</kbd>
+                </button>
+                <button className="crc-btn" disabled={!addMats.size} onClick={addSelected}>
+                  Add {addMats.size > 0 ? addMats.size : ""} line{addMats.size === 1 ? "" : "s"}
+                </button>
               </div>
             </div>
 
@@ -4482,8 +4393,13 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                         <td>
                           <MaterialInput
                             value={L.fg}
-                            options={MATERIAL_OPTIONS}
                             state={!L.master.known ? "missing" : !L.master.hasBom ? "nobom" : "ok"}
+                            /* every plant, not just this line's: picking a finished
+                               good from elsewhere moves the line to its plant */
+                            onF4={(cb) => openF4(
+                              { mode: "single", plant: "", title: `Material for line ${L.seq}` },
+                              cb
+                            )}
                             onChange={(code) => {
                               const f = FINISHED_GOODS.find((x) => x.code === code);
                               patchLine(L.key, f
@@ -4733,14 +4649,18 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                   </button>
                 ))}
               </div>
-              <div className="crc-ctx-scope">
-                <span className="crc-seg crc-seg-sm">
-                  {[["line", "This material"], ["run", "Whole run"]].map(([k, label]) => (
-                    <button key={k} className={scope === k ? "crc-seg-btn crc-seg-on" : "crc-seg-btn"}
-                      onClick={() => { setScope(k); setDsPick(null); }}>{label}</button>
-                  ))}
-                </span>
-              </div>
+              {/* Components and Shortages always read the selected line, and Stock
+                  carries its own scope controls, so the shared toggle is hidden there. */}
+              {!["components", "shortages", "stock"].includes(tab) && (
+                <div className="crc-ctx-scope">
+                  <span className="crc-seg crc-seg-sm">
+                    {[["line", "This material"], ["run", "Whole run"]].map(([k, label]) => (
+                      <button key={k} className={scope === k ? "crc-seg-btn crc-seg-on" : "crc-seg-btn"}
+                        onClick={() => { setScope(k); setDsPick(null); }}>{label}</button>
+                    ))}
+                  </span>
+                </div>
+              )}
               <div className="crc-ctx-verdict">
                 <span className="crc-ctx-word">{verdictCopy.word}</span>
                 <span className="crc-ctx-sub">
@@ -4773,13 +4693,11 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                         <th className="crc-th-mat">Material</th>
                         <th>Plant</th>
                         <th className="crc-num">Opening</th>
-                        <th className="crc-num">Safety</th>
                         <th className="crc-num">Demand</th>
                         <th className="crc-num">Supply</th>
                         <th className="crc-num">Balance</th>
                         <th>First shortage</th>
-                        <th className="crc-num">Cover</th>
-                        <th>What to do</th>
+                        <th className="crc-th-act2">What to do</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -4792,8 +4710,9 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                             <div className="crc-matdesc">{d.desc}</div>
                           </td>
                           <td className="crc-mono">{d.plant}</td>
-                          <td className="crc-num">{fmtQty(d.opening, d.uom)}</td>
-                          <td className="crc-num crc-dim">{d.safety > 0 ? fmtQty(d.safety, d.uom) : "—"}</td>
+                          <td className="crc-num" title={d.safety > 0 ? `safety stock ${fmtQty(d.safety, d.uom)} ${d.uom}` : "no safety stock set"}>
+                            {fmtQty(d.opening, d.uom)}
+                          </td>
                           <td className="crc-num">{fmtQty(d.totalDemand, d.uom)}</td>
                           <td className="crc-num">{fmtQty(d.totalSupply, d.uom)}</td>
                           <td className={`crc-num crc-strong ${d.balance < 0 ? "crc-num-short" : ""}`}>{fmtQty(d.balance, d.uom)}</td>
@@ -4804,8 +4723,7 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                                 ? <span className="crc-excl">below safety {d.firstBreach.label}</span>
                                 : <span className="crc-dim">none</span>}
                           </td>
-                          <td className="crc-num crc-dim">{d.coverDays === null ? "—" : `${d.coverDays} d`}</td>
-                          <td>
+                          <td className="crc-th-act2">
                             <StatusTag status={d.status === "ok" ? "ok" : d.status === "risk" ? "coverable" : "late"} />
                             <div className="crc-actionline">{demandAction(d)}</div>
                           </td>
@@ -4832,10 +4750,10 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                   </div>
                   <DemandSupplyChart d={projection} />
                   <div className="crc-key">
-                    <span><i style={{ background: "#7C97AC" }} />Sales orders</span>
-                    <span><i style={{ background: "#A9BCC9" }} />Forecast</span>
+                    <span><i style={{ background: "var(--mark-1)" }} />Sales orders</span>
+                    <span><i style={{ background: "var(--mark-2)" }} />Forecast</span>
                     <span><i style={{ background: "var(--caution)" }} />Dependent requirements</span>
-                    <span><i style={{ background: "#C6813A" }} />This planning run</span>
+                    <span><i style={{ background: "var(--mark-run)" }} />This planning run</span>
                     <span><i style={{ background: "var(--go)" }} />Receipts</span>
                     <span><i style={{ background: "var(--ink)" }} />Projected stock</span>
                   </div>
@@ -4846,67 +4764,87 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                     <thead>
                       <tr>
                         <th>Week</th>
-                        <th className="crc-num">Sales orders</th>
-                        <th className="crc-num">Forecast</th>
-                        <th className="crc-num">Dependent</th>
-                        <th className="crc-num">This run</th>
-                        <th className="crc-num">Planned</th>
-                        <th className="crc-num">Production</th>
-                        <th className="crc-num">Purchasing</th>
-                        <th className="crc-num">Subcontract</th>
-                        <th className="crc-num">Run output</th>
+                        <th className="crc-num">Demand</th>
+                        <th className="crc-num">Supply</th>
                         <th className="crc-num">Projected</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {projection.rows.map((r) => (
-                        <tr key={r.label} className={r.closing < 0 ? "crc-tr-short" : ""}>
-                          <td>
-                            <div className="crc-matcode">{r.label}</div>
-                            <div className="crc-matdesc">{r.date}</div>
-                          </td>
-                          {[r.so, r.pir, r.dep, r.runDep].map((v, i) => (
-                            <td key={i} className={`crc-num ${v > 0 ? "" : "crc-dim"}`}>{v > 0 ? `−${fmtQty(v, projection.uom)}` : "—"}</td>
-                          ))}
-                          {[r.planned, r.prod, r.purch, r.subcon, r.run].map((v, i) => (
-                            <td key={i} className={`crc-num ${v > 0 ? "crc-mvt-plus" : "crc-dim"}`}>{v > 0 ? `+${fmtQty(v, projection.uom)}` : "—"}</td>
-                          ))}
-                          <td className={`crc-num crc-strong ${r.closing < 0 ? "crc-num-short" : r.closing < projection.safety ? "crc-excl" : ""}`}>
-                            {fmtQty(r.closing, projection.uom)}
-                          </td>
-                        </tr>
-                      ))}
+                      {projection.rows.map((r) => {
+                        /* Eleven columns of breakdown made this unreadable at a glance.
+                           The two totals carry the week; the split behind each one is on
+                           the cell, for when someone needs to know where it came from. */
+                        const parts = (pairs) => pairs.filter(([, v]) => v > 0)
+                          .map(([k, v]) => `${k} ${fmtQty(v, projection.uom)}`).join(" · ");
+                        const demand = r3(r.so + r.pir + r.dep + r.runDep);
+                        const supply = r3(r.planned + r.prod + r.purch + r.subcon + r.run);
+                        const demandParts = parts([["sales orders", r.so], ["forecast", r.pir],
+                          ["dependent", r.dep], ["this run", r.runDep]]);
+                        const supplyParts = parts([["planned", r.planned], ["production", r.prod],
+                          ["purchasing", r.purch], ["subcontract", r.subcon], ["run output", r.run]]);
+                        return (
+                          <tr key={r.label} className={r.closing < 0 ? "crc-tr-short" : ""}>
+                            <td>
+                              <div className="crc-matcode">{r.label}</div>
+                              <div className="crc-matdesc">{r.date}</div>
+                            </td>
+                            <td className={`crc-num ${demand > 0 ? "" : "crc-dim"}`} title={demandParts || "nothing due out"}>
+                              {demand > 0 ? `−${fmtQty(demand, projection.uom)}` : "—"}
+                              {demandParts && <div className="crc-cellsub">{demandParts}</div>}
+                            </td>
+                            <td className={`crc-num ${supply > 0 ? "crc-mvt-plus" : "crc-dim"}`} title={supplyParts || "nothing due in"}>
+                              {supply > 0 ? `+${fmtQty(supply, projection.uom)}` : "—"}
+                              {supplyParts && <div className="crc-cellsub">{supplyParts}</div>}
+                            </td>
+                            <td className={`crc-num crc-strong ${r.closing < 0 ? "crc-num-short" : r.closing < projection.safety ? "crc-excl" : ""}`}>
+                              {fmtQty(r.closing, projection.uom)}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
                 <div className="crc-legend">
-                  Run output is what this planning run would deliver into stock; this run needs is what it consumes.
-                  A finished good on the run shows both, one week apart from its components.
+                  Demand is sales orders, forecast, dependent requirements and what this run consumes. Supply is
+                  planned and production orders, purchasing, subcontracting and what this run delivers back into
+                  stock. The split behind each total is shown under it.
                 </div>
               </div>
             </>
           )}
 
           {/* ---- CAPACITY ---- */}
-          {tab === "capacity" && (
-            <>
-              <ScreenNav sections={[
-                { id: "sec-caploads", label: "Load by week", count: capacityAll.length },
-                { id: "sec-capgantt", label: "Orders by work centre" },
-              ]} />
-              <div className="crc-panel" id="sec-caploads">
+          {tab === "capacity" && (() => {
+            const over = capacityAll.filter((c) => c.totalOver > 0);
+            const offline = capacityAll.filter((c) => c.unavailable);
+            const free = capacityAll.filter((c) => !c.unavailable && c.totalOver === 0);
+            return (
+              <div className="crc-panel">
                 <div className="crc-panel-head">
-                  <span>Hours required against hours available, including what this run would add</span>
+                  <span>Work centre capacity — hours required against hours available, including what this run would add</span>
                   <span className="crc-head-right">
-                    <span className="crc-panel-flag">
-                      {capacityAll.filter((c) => c.totalOver > 0).length} work centre
-                      {capacityAll.filter((c) => c.totalOver > 0).length === 1 ? "" : "s"} over capacity
+                    <span className={over.length ? "crc-panel-flag" : "crc-panel-ok"}>
+                      {over.length} overloaded · {free.length} with capacity
+                      {offline.length > 0 && ` · ${offline.length} off line`}
                     </span>
                     {wcOut.size > 0 && (
                       <button className="crc-linkbtn" onClick={() => setWcOut(new Set())}>bring all back on line</button>
                     )}
                   </span>
                 </div>
+                <div className="crc-chart">
+                  <div className="crc-chart-head">
+                    <h4>Load by week<span className="crc-head-sub">percentage of the hours each centre has</span></h4>
+                    <p>
+                      Every centre in scope against every week in the horizon. Darker is tighter; anything
+                      over 100% is work that will not fit in the week it is planned for. The bar on the right
+                      is the worst week that centre sees.
+                    </p>
+                  </div>
+                  <CapacityHeat centres={capacityAll} weeks={weeks} />
+                </div>
+
                 <div className="crc-tablewrap">
                   <table className="crc-table">
                     <thead>
@@ -4916,151 +4854,82 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                         <th>Plant</th>
                         <th className="crc-num">Available</th>
                         {weeks.map((w) => <th key={w.label} className="crc-num">{w.label}</th>)}
-                        <th className="crc-num">Over</th>
+                        <th className="crc-num">Peak</th>
+                        <th className="crc-th-cap">Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {capacityAll.map((c) => (
-                        <tr key={c.id} className={c.unavailable ? "crc-tr-muted" : c.totalOver > 0 ? "crc-tr-short" : ""}>
-                          <td className="crc-th-count">
-                            <label className="crc-mark">
-                              <input type="checkbox" checked={!c.unavailable} onChange={() => toggleWc(c.id)} />
-                            </label>
-                          </td>
-                          <td className="crc-th-mat">
-                            <div className="crc-matcode">
-                              {c.id}
-                              {c.unavailable && <span className="crc-tag crc-tag-stop">down</span>}
-                            </div>
-                            <div className="crc-matdesc">{c.desc} · {c.shifts} shift{c.shifts > 1 ? "s" : ""}</div>
-                          </td>
-                          <td className="crc-mono">{c.plant}</td>
-                          <td className="crc-num">{c.unavailable ? <span className="crc-num-short">0 h</span> : `${c.avail} h`}</td>
-                          {c.rows.map((r) => (
-                            <td key={r.label}
-                              className={`crc-num ${r.pct === null ? "crc-num-short" : r.pct > 100 ? "crc-num-short" : r.pct > 90 ? "crc-excl" : r.pct === 0 ? "crc-dim" : ""}`}>
-                              {r.pct === null ? (r.total > 0 ? "—" : "") : `${r.pct}%`}
+                      {capacityAll.map((c) => {
+                        /* Spare hours in the tightest week is the number that answers
+                           "can I put more on here", so it is what the status reports. */
+                        const busiest = c.rows.reduce((a, r) => Math.max(a, r.total), 0);
+                        const spare = r3(Math.max(0, c.avail - busiest));
+                        return (
+                          <tr key={c.id} className={c.unavailable ? "crc-tr-muted" : c.totalOver > 0 ? "crc-tr-short" : ""}>
+                            <td className="crc-th-count">
+                              <label className="crc-mark">
+                                <input type="checkbox" checked={!c.unavailable} onChange={() => toggleWc(c.id)} />
+                              </label>
                             </td>
-                          ))}
-                          <td className={`crc-num crc-strong ${c.totalOver > 0 ? "crc-num-short" : "crc-dim"}`}>
-                            {c.totalOver > 0 ? `${c.totalOver} h` : "—"}
-                          </td>
-                        </tr>
-                      ))}
+                            <td className="crc-th-mat">
+                              <div className="crc-matcode">{c.id}</div>
+                              <div className="crc-matdesc">{c.desc} · {c.shifts} shift{c.shifts > 1 ? "s" : ""}</div>
+                            </td>
+                            <td className="crc-mono">{c.plant}</td>
+                            <td className="crc-num">{c.unavailable ? <span className="crc-num-short">0 h</span> : `${c.avail} h`}</td>
+                            {c.rows.map((r) => (
+                              <td key={r.label}
+                                className={`crc-num ${r.pct === null ? "crc-num-short" : r.pct > 100 ? "crc-num-short" : r.pct > 90 ? "crc-excl" : r.pct === 0 ? "crc-dim" : ""}`}>
+                                {r.pct === null ? (r.total > 0 ? "—" : "") : `${r.pct}%`}
+                              </td>
+                            ))}
+                            <td className={`crc-num crc-strong ${c.peak === null ? "crc-dim" : c.peak > 100 ? "crc-num-short" : ""}`}>
+                              {c.peak === null ? "—" : `${c.peak}%`}
+                            </td>
+                            <td className="crc-th-cap">
+                              {c.unavailable ? (
+                                <>
+                                  <span className="crc-status crc-status-neutral">Off line</span>
+                                  <span className="crc-capnote">
+                                    {c.strandedHours > 0 ? `${c.strandedHours} h stranded` : "nothing booked"}
+                                  </span>
+                                </>
+                              ) : c.totalOver > 0 ? (
+                                <>
+                                  <span className="crc-status crc-status-stop">Overloaded</span>
+                                  <span className="crc-capnote">
+                                    {c.totalOver} h over in {c.overWeeks.map((w) => w.label).join(", ")}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="crc-status crc-status-go">Capacity available</span>
+                                  <span className="crc-capnote">
+                                    {spare} h spare in the tightest week
+                                  </span>
+                                </>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
                 <div className="crc-legend">
-                  Untick a work centre to take it off line — a breakdown, a maintenance window, or a shift not
-                  being manned. Its available hours drop to zero and everything already booked on it shows as
-                  stranded, so you can see what has to move and where it could go.
+                  Each week column is the load on that centre as a percentage of the hours it has. Peak is the
+                  worst week. Untick a centre to take it off line — a breakdown, a maintenance window, or a shift
+                  not being manned — and its available hours drop to zero.
                   {wcOut.size > 0 && (() => {
                     const stranded = capacityAll.filter((c) => c.unavailable).reduce((a, c) => a + c.strandedHours, 0);
-                    const spare = capacityAll.filter((c) => !c.unavailable)
+                    const spareAll = capacityAll.filter((c) => !c.unavailable)
                       .reduce((a, c) => a + c.rows.reduce((x, r) => x + Math.max(0, c.avail - r.total), 0), 0);
-                    return ` ${r3(stranded)} hours are currently stranded on centres you have taken off line, against ${r3(spare)} hours of spare capacity across the rest.`;
+                    return ` ${r3(stranded)} hours are currently stranded on centres you have taken off line, against ${r3(spareAll)} hours of spare capacity across the rest.`;
                   })()}
                 </div>
               </div>
-
-              {capacityAll.some((c) => c.drivers.length > 0) && (
-                <div className="crc-panel crc-panel-top" id="sec-capgantt">
-                  <div className="crc-chart">
-                    <div className="crc-chart-head">
-                      <h4>Which order sits on which work centre</h4>
-                      <p>
-                        Every order on these lines placed against its own start and finish dates. Orders that
-                        overlap on the same work centre are stacked, so two bars on one line at the same time is
-                        the week that centre goes over.
-                      </p>
-                    </div>
-                    <WorkCentreGantt centres={capacityAll} weeks={weeks} t0={t0} />
-                    <div className="crc-key">
-                      <span><i style={{ background: "var(--signal)" }} />Released order</span>
-                      <span><i style={{ background: "#8FA8C0" }} />Created, not released</span>
-                      <span><i style={{ background: "var(--stop)" }} />Missing parts</span>
-                      <span><i style={{ background: "#7C97AC" }} />Planned, firmed</span>
-                      <span><i style={{ background: "#A9BCC9" }} />Planned, not firmed</span>
-                      <span><i style={{ background: "#C6813A" }} />This planning run</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {capacityAll.filter((c) => c.peak > 0 || c.strandedHours > 0).map((c) => (
-                <div key={c.id} className="crc-panel crc-panel-top">
-                  <div className="crc-chart">
-                    <div className="crc-chart-head">
-                      <h4>{c.id}<span className="crc-head-sub">{c.desc}</span></h4>
-                      <p>
-                        {c.unavailable
-                          ? `Marked off line, so there are no available hours. Everything below is work that has to be placed somewhere else.`
-                          : `${c.avail} hours available each week after ${Math.round(c.util * 100)}% utilisation on ${c.shifts} shift${c.shifts > 1 ? "s" : ""}. The darker part of each bar is what this planning run adds on top of orders already on the floor.`}
-                      </p>
-                    </div>
-                    <CapacityChart c={c} />
-                    <div className="crc-key">
-                      <span><i style={{ background: "var(--signal)" }} />Committed orders</span>
-                      <span><i style={{ background: "#C6813A" }} />This planning run</span>
-                      <span><i style={{ background: "var(--stop)" }} />Over capacity</span>
-                    </div>
-                    {c.totalOver > 0 && (
-                      <div className="crc-chart-read">
-                        {(() => {
-                          const spare = c.rows.find((r) => r.over === 0 && r.total < c.avail * 0.7);
-                          const biggest = c.drivers.filter((d) => c.overWeeks.some((w) => w.i >= d.from && w.i <= d.to))[0];
-                          return (
-                            <>
-                              Over capacity in {c.overWeeks.map((w) => w.label).join(", ")} by {c.totalOver} hours.
-                              {biggest && <> The largest job in those weeks is {biggest.ref} ({biggest.material}, {biggest.hours} h)</>}
-                              {spare ? <> — moving it to {spare.label} would clear the peak.</> : <> — there is no week with real slack, so this needs a shift or an alternative line.</>}
-                            </>
-                          );
-                        })()}
-                      </div>
-                    )}
-                  </div>
-                  {c.drivers.length > 0 && (
-                    <div className="crc-tablewrap">
-                      <table className="crc-table">
-                        <thead>
-                          <tr>
-                            <th>Source</th>
-                            <th>Reference</th>
-                            <th className="crc-th-mat">Material</th>
-                            <th className="crc-num">Quantity</th>
-                            <th className="crc-num">Hours</th>
-                            <th>Spread over</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {c.drivers.map((d, i) => (
-                            <tr key={i}>
-                              <td>
-                                <span className={`crc-mode crc-mode-${d.kind === "this run" ? "man" : "mrp"}`}>
-                                  {d.kind}
-                                </span>
-                              </td>
-                              <td className="crc-mono">{d.ref}</td>
-                              <td className="crc-th-mat">
-                                <div className="crc-matcode">{d.material}</div>
-                                <div className="crc-matdesc">{matInfo(d.material).desc}</div>
-                              </td>
-                              <td className="crc-num">{fmtQty(d.qty, matInfo(d.material).uom)}</td>
-                              <td className="crc-num crc-strong">{r3(d.hours)} h</td>
-                              <td className="crc-mono">
-                                {weeks[d.from].label}{d.to > d.from ? ` – ${weeks[d.to].label}` : ""}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </>
-          )}
+            );
+          })()}
 
           {/* ---- OUTPUT AND DISPATCH ---- */}
           {tab === "flow" && (
@@ -5093,9 +4962,9 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                   <FlowChart flow={flow} t0={t0} />
                   <div className="crc-key">
                     <span><i style={{ background: "var(--go)" }} />Built, posted</span>
-                    <span><i style={{ background: "#8FBFA6" }} />Built, planned</span>
-                    <span><i style={{ background: "#7C97AC" }} />Shipped, posted</span>
-                    <span><i style={{ background: "#B4C6D2" }} />To ship, committed</span>
+                    <span><i style={{ background: "var(--mark-green)" }} />Built, planned</span>
+                    <span><i style={{ background: "var(--mark-1)" }} />Shipped, posted</span>
+                    <span><i style={{ background: "var(--mark-3)" }} />To ship, committed</span>
                     <span><i style={{ background: "var(--caution)" }} />Cumulative net</span>
                   </div>
                   <div className="crc-chart-read">
@@ -5123,40 +4992,49 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                     <thead>
                       <tr>
                         <th>Week</th>
-                        <th className="crc-num">Produced</th>
+                        <th className="crc-th-when">Figures</th>
+                        <th className="crc-num">Built</th>
                         <th className="crc-num">Shipped</th>
-                        <th className="crc-num">Planned output</th>
-                        <th className="crc-num">To ship</th>
                         <th className="crc-num">Net</th>
                         <th className="crc-num">Cumulative</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {flow.rows.map((r) => (
-                        <tr key={r.label} className={r.past ? "crc-tr-muted" : r.net < 0 ? "crc-tr-short" : ""}>
-                          <td>
-                            <div className="crc-matcode">{r.label}</div>
-                            <div className="crc-matdesc">{r.date}{r.past ? " · actual" : ""}</div>
-                          </td>
-                          <td className="crc-num">{r.produced > 0 ? fmtQty(r.produced, "EA") : <span className="crc-dim">—</span>}</td>
-                          <td className="crc-num">{r.dispatched > 0 ? fmtQty(r.dispatched, "EA") : <span className="crc-dim">—</span>}</td>
-                          <td className="crc-num">{r.plannedOut > 0 ? fmtQty(r.plannedOut, "EA") : <span className="crc-dim">—</span>}</td>
-                          <td className="crc-num">{r.plannedShip > 0 ? fmtQty(r.plannedShip, "EA") : <span className="crc-dim">—</span>}</td>
-                          <td className={`crc-num ${r.net < 0 ? "crc-num-short" : r.net > 0 ? "crc-mvt-plus" : "crc-dim"}`}>
-                            {r.net !== 0 ? `${r.net > 0 ? "+" : ""}${fmtQty(r.net, "EA")}` : "—"}
-                          </td>
-                          <td className={`crc-num crc-strong ${r.cum < 0 ? "crc-num-short" : ""}`}>
-                            {r.cum > 0 ? "+" : ""}{fmtQty(r.cum, "EA")}
-                          </td>
-                        </tr>
-                      ))}
+                      {flow.rows.map((r) => {
+                        /* Past weeks fill produced/dispatched and future weeks fill the
+                           planned pair, so four columns were half empty on every row.
+                           One pair of columns, labelled by which side of today it is. */
+                        const built = r.past ? r.produced : r.plannedOut;
+                        const shipped = r.past ? r.dispatched : r.plannedShip;
+                        return (
+                          <tr key={r.label} className={r.past ? "crc-tr-muted" : r.net < 0 ? "crc-tr-short" : ""}>
+                            <td>
+                              <div className="crc-matcode">{r.label}</div>
+                              <div className="crc-matdesc">{r.date}</div>
+                            </td>
+                            <td className="crc-th-when">
+                              <span className={`crc-status ${r.past ? "crc-status-neutral" : "crc-status-signal"}`}>
+                                {r.past ? "actual" : "planned"}
+                              </span>
+                            </td>
+                            <td className="crc-num">{built > 0 ? fmtQty(built, "EA") : <span className="crc-dim">—</span>}</td>
+                            <td className="crc-num">{shipped > 0 ? fmtQty(shipped, "EA") : <span className="crc-dim">—</span>}</td>
+                            <td className={`crc-num ${r.net < 0 ? "crc-num-short" : r.net > 0 ? "crc-mvt-plus" : "crc-dim"}`}>
+                              {r.net !== 0 ? `${r.net > 0 ? "+" : ""}${fmtQty(r.net, "EA")}` : "—"}
+                            </td>
+                            <td className={`crc-num crc-strong ${r.cum < 0 ? "crc-num-short" : ""}`}>
+                              {r.cum > 0 ? "+" : ""}{fmtQty(r.cum, "EA")}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
                 <div className="crc-legend">
-                  Built comes from goods receipts posted against production orders, shipped from goods issues on
-                  outbound deliveries. Forward weeks use open production and planned orders against the confirmed
-                  order book, so the cumulative line is the stock position this plan produces.
+                  Weeks marked actual read from goods receipts posted against production orders and goods issues on
+                  outbound deliveries. Weeks marked planned use open production and planned orders against the
+                  confirmed order book, so the cumulative column is the stock position this plan produces.
                 </div>
               </div>
             </>
@@ -5389,7 +5267,7 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                       <th className="crc-num">Short</th>
                       <th className="crc-num">Free inbound</th>
                       <th className="crc-num">Excluded</th>
-                      <th>Covered by</th>
+                      <th className="crc-th-covby">Covered by</th>
                       <th>Status</th>
                     </tr>
                   </thead>
@@ -5552,19 +5430,19 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
           {/* ---- CONTENTION ---- */}
           {tab === "contention" && (
             <>
-            <ScreenNav sections={contended.slice(0, 8).map((c) => ({ id: `sec-cont-${c.code}`, label: c.code }))} />
+            <ScreenNav sections={contendedInScope.slice(0, 8).map((c) => ({ id: `sec-cont-${c.code}`, label: c.code }))} />
             <div className="crc-panel">
               <div className="crc-panel-head">
                 <span>Components more than one line in this run needs, and how the stock was split</span>
                 <span className="crc-head-right">
                   <span className="crc-panel-flag">
-                    {contended.filter((c) => c.starved > 0).length} of {contended.length} leave a line short
+                    {contendedInScope.filter((c) => c.starved > 0).length} of {contendedInScope.length} leave a line short
                   </span>
                 </span>
               </div>
 
               <div className="crc-contlist">
-                {contended.map((c) => {
+                {contendedInScope.map((c) => {
                   const total = Math.max(c.totalRequired, 1);
                   return (
                     <article key={c.key} id={`sec-cont-${c.code}`} className="crc-cont">
@@ -5658,85 +5536,41 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
             </>
           )}
 
-          {/* ---- SCHEDULE ---- */}
-          {tab === "schedule" && (
-            <>
-            <ScreenNav sections={[
-              { id: "sec-gantt", label: "When shortages close" },
-              { id: "sec-profile", label: "Buildable over time" },
-            ]} />
-            <div className="crc-panel">
-              {result.shortLines.length === 0 ? (
-                <div className="crc-empty">
-                  <div className="crc-empty-title">Nothing to schedule</div>
-                  <p>The kit is complete today, so there is no recovery sequence to plot.</p>
-                </div>
-              ) : (
-                <>
-                  <div className="crc-chart" id="sec-gantt">
-                    <div className="crc-chart-head">
-                      <h4>When each shortage closes</h4>
-                      <p>
-                        One bar per short component, coloured by the action that covers it. The bar ends on the
-                        date that component is complete; anything crossing the need-by line pushes the order.
-                      </p>
-                    </div>
-                    <KitGantt
-                      lines={result.shortLines}
-                      t0={t0}
-                      needBy={needBy}
-                      fullKit={result.fullKit}
-                      verdict={result.verdict}
-                    />
-                    <KindLegend
-                      kinds={[...new Set(result.shortLines.flatMap((l) => l.resolution.steps.map((s) => s.kind)))]}
-                    />
-                  </div>
-
-                  <div className="crc-chart" id="sec-profile">
-                    <div className="crc-chart-head">
-                      <h4>Buildable quantity as actions land</h4>
-                      <p>
-                        Recalculated across the whole multi-level bill at each arrival date, so the line steps up
-                        only when the tightest remaining component moves.
-                      </p>
-                    </div>
-                    <BuildProfileChart
-                      profile={profile}
-                      orderQty={Number(orderQty) || 0}
-                      t0={t0}
-                      needBy={needBy}
-                      fullKit={result.fullKit}
-                    />
-                    <div className="crc-chart-read">
-                      {(() => {
-                        const first = profile[0], last = profile[profile.length - 1];
-                        const atNeed = [...profile].filter((p) => p.date <= needBy).pop();
-                        return `Starts at ${first ? first.qty : 0} today, reaches ${atNeed ? atNeed.qty : 0} by ${fmtDate(needBy)}, and completes at ${last ? last.qty : 0} on ${fmtDate(result.fullKit)}.`;
-                      })()}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-            </>
-          )}
-
-          {/* ---- STOCK BY LOCATION ---- */}
+          {/* ---- STOCK ---- */}
           {tab === "stock" && (
             <>
               <ScreenNav sections={[
-                { id: "sec-stkpos", label: "Position by material", count: touched.length },
+                { id: "sec-stkpos", label: "Position by material", count: stockScope.length },
                 { id: "sec-stkloc", label: "Where it sits" },
-                ...(touched.some(isBatchManaged) ? [{ id: "sec-stkbatch", label: "Batches", count: batchesInScope.length }] : []),
               ]} />
 
               <div className="crc-panel" id="sec-stkpos">
                 <div className="crc-panel-head">
-                  <span>What is owned at plant {plant}, and how much of it can be issued today</span>
+                  <span>
+                    What is owned {stockAllPlants ? "across all plants" : `at plant ${plant}`}
+                    {scope === "line" ? ` for ${fgCode} and its components` : " for every line in the run"},
+                    and how much of it can be issued today
+                  </span>
+                  <span className="crc-head-right">
+                    <span className="crc-seg crc-seg-sm">
+                      {[["line", "This material"], ["run", "Whole run"]].map(([k, label]) => (
+                        <button key={k} className={scope === k ? "crc-seg-btn crc-seg-on" : "crc-seg-btn"}
+                          onClick={() => { setScope(k); setDsPick(null); }}>{label}</button>
+                      ))}
+                    </span>
+                    <span className="crc-seg crc-seg-sm">
+                      {[[false, `Plant ${plant}`], [true, "All plants"]].map(([v, label]) => (
+                        <button key={String(v)} className={stockAllPlants === v ? "crc-seg-btn crc-seg-on" : "crc-seg-btn"}
+                          onClick={() => setStockAllPlants(v)}>{label}</button>
+                      ))}
+                    </span>
+                  </span>
                 </div>
                 {(() => {
-                  const pics = touched.map((m) => stockPicture(m, plant, included, horizonRules, null, subcon.held));
+                  const pics = stockScope.map((x) => ({
+                    ...stockPicture(x.m, x.p, included, horizonRules, null, subcon.held),
+                    plant: x.p,
+                  }));
                   const sum = (k) => r3(pics.reduce((a, x) => a + x[k], 0));
                   return (
                     <>
@@ -5759,6 +5593,7 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                           <thead>
                             <tr>
                               <th className="crc-th-mat">Material</th>
+                              {stockAllPlants && <th>Plant</th>}
                               <th className="crc-num">Owned</th>
                               <th className="crc-num">Unrestricted</th>
                               <th className="crc-num">Quality hold</th>
@@ -5773,11 +5608,12 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                           </thead>
                           <tbody>
                             {pics.map((x) => (
-                              <tr key={x.mat} className={x.issuableNow <= 0 ? "crc-tr-short" : ""}>
+                              <tr key={`${x.mat}|${x.plant}`} className={x.issuableNow <= 0 ? "crc-tr-short" : ""}>
                                 <td className="crc-th-mat">
                                   <div className="crc-matcode">{x.mat}</div>
                                   <div className="crc-matdesc">{x.desc}</div>
                                 </td>
+                                {stockAllPlants && <td className="crc-mono">{x.plant}</td>}
                                 <td className="crc-num">{fmtQty(x.totalOwned, x.uom)} <span className="crc-uom">{x.uom}</span></td>
                                 <td className="crc-num">{x.unrestricted > 0 ? fmtQty(x.unrestricted, x.uom) : <span className="crc-dim">—</span>}</td>
                                 <td className="crc-num">{x.quality > 0 ? <span className="crc-excl">{fmtQty(x.quality, x.uom)}</span> : <span className="crc-dim">—</span>}</td>
@@ -5821,6 +5657,7 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                     <thead>
                       <tr>
                         <th className="crc-th-mat">Material</th>
+                        {stockAllPlants && <th>Plant</th>}
                         {SLOCS.map((sl) => (
                           <th key={sl.code} className={`crc-num ${included.has(sl.code) ? "" : "crc-th-off"}`}>
                             <span className="crc-mono">{sl.code}</span>
@@ -5832,14 +5669,15 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                       </tr>
                     </thead>
                     <tbody>
-                      {touched.map((m) => {
-                        const x = stockPicture(m, plant, included, horizonRules, null, subcon.held);
+                      {stockScope.map(({ m, p }) => {
+                        const x = stockPicture(m, p, included, horizonRules, null, subcon.held);
                         return (
-                          <tr key={m}>
+                          <tr key={`${m}|${p}`}>
                             <td className="crc-th-mat">
                               <div className="crc-matcode">{m}</div>
                               <div className="crc-matdesc">{x.desc}</div>
                             </td>
+                            {stockAllPlants && <td className="crc-mono">{p}</td>}
                             {SLOCS.map((sl) => (
                               <td key={sl.code} className={`crc-num ${included.has(sl.code) ? "" : "crc-cell-off"}`}>
                                 {x.byLoc[sl.code] > 0 ? fmtQty(x.byLoc[sl.code], x.uom) : <span className="crc-dim">—</span>}
@@ -5864,381 +5702,166 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
           )}
 
           {/* batch marking sits with the stock it affects */}
-          {tab === "stock" && touched.some(isBatchManaged) && (
-            <div className="crc-panel crc-panel-top" id="sec-stkbatch">
-              <div className="crc-panel-head">
-                <span>Batch stock — untick a batch to keep it out of the availability figure</span>
-                <span className="crc-head-right">
-                  <span className={batchOut.size ? "crc-panel-flag" : "crc-dim"}>
-                    {batchOut.size} of {batchesInScope.length} batches marked out
-                  </span>
-                  <button className="crc-linkbtn" onClick={() => setBatchOut(new Set())}>count everything</button>
-                  <button className="crc-linkbtn" onClick={() => setBatchOut(defaultBatchExclusions())}>reset</button>
-                </span>
-              </div>
-              <div className="crc-tablewrap">
-                <table className="crc-table">
-                  <thead>
-                    <tr>
-                      <th className="crc-th-count">Count it</th>
-                      <th className="crc-th-mat">Material</th>
-                      <th>Batch</th>
-                      <th>Location</th>
-                      <th className="crc-num">Quantity</th>
-                      <th>Status</th>
-                      <th>Made</th>
-                      <th>Expires</th>
-                      <th>Vendor batch</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {batchesInScope.map((b) => {
-                      const on = !b.excluded;
-                      return (
-                        <tr key={b.key} className={on ? "" : "crc-tr-muted"}>
-                          <td className="crc-th-count">
-                            <label className="crc-mark">
-                              <input type="checkbox" checked={on} onChange={() => toggleBatch(b.key)} />
-                            </label>
-                          </td>
-                          <td className="crc-th-mat">
-                            <div className="crc-matcode">{b.m}</div>
-                            <div className="crc-matdesc">{matInfo(b.m).desc}</div>
-                          </td>
-                          <td className="crc-mono">{b.batch}</td>
-                          <td>
-                            <span className="crc-mono">{b.sloc}</span>
-                            <div className="crc-matdesc">{included.has(b.sloc) ? SLOC_BY_CODE[b.sloc].name : "location excluded"}</div>
-                          </td>
-                          <td className="crc-num crc-strong">{fmtQty(b.qty, matInfo(b.m).uom)} <span className="crc-uom">{matInfo(b.m).uom}</span></td>
-                          <td>
-                            {b.expired
-                              ? <span className="crc-tag crc-tag-stop">expired</span>
-                              : b.status === "restricted"
-                                ? <span className="crc-tag crc-tag-caution">restricted</span>
-                                : <span className="crc-tag crc-tag-go">unrestricted</span>}
-                          </td>
-                          <td className="crc-mono crc-dim">{fmtDate(b.mfg)}</td>
-                          <td>
-                            {b.exp
-                              ? <>
-                                  <div className={b.expired ? "crc-date-late" : b.shelfDays < 60 ? "crc-excl" : "crc-date"}>{fmtDate(b.exp)}</div>
-                                  <div className="crc-matdesc">
-                                    {b.expired ? `${-b.shelfDays} days ago` : `${b.shelfDays} days left`}
-                                  </div>
-                                </>
-                              : <span className="crc-dim">no shelf life</span>}
-                          </td>
-                          <td className="crc-mono crc-dim">{b.vendorBatch}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="crc-legend">
-                Expired and restricted batches start unticked, because neither can be issued without a decision
-                first. Ticking one counts it immediately — the readiness check, the projection and the shortage
-                list all move. Batch quantities add up to the storage location figures above, so the two views
-                never disagree.
-              </div>
-            </div>
-          )}
-
           {/* ---- CONSUMPTION HISTORY ---- */}
-          {tab === "consumption" && (
-            <>
-              <ScreenNav sections={[
-                { id: "sec-conspick", label: "Materials", count: consMats.length },
-                { id: "sec-consall", label: "All selected", count: consumption.length },
-                ...(consSel ? [{ id: "sec-conschart", label: consSel.mat }] : []),
-              ]} />
+          {tab === "consumption" && (() => {
+            const mixed = consChart.uoms.length > 1;
+            const uom = consChart.uoms[0] || "EA";
+            const closedTotal = consumption.reduce((a, c) => a + c.sum, 0);
+            const unplanned = consumption.reduce((a, c) => a + c.unplannedSum, 0);
+            const share = closedTotal > 0 ? Math.round((unplanned / closedTotal) * 1000) / 10 : 0;
+            const idle = consumption.filter((c) => c.idle >= 3).length;
 
-              <div className="crc-panel" id="sec-conspick">
-                <div className="crc-panel-head">
-                  <span>Usage by plant and material. This screen is not tied to the finished good selected above.</span>
-                </div>
-
-                <div className="crc-conspick">
-                  <label className="crc-field crc-field-inline">
-                    <span>Plant</span>
-                    <select value={consPlant} onChange={(e) => pickConsPlant(e.target.value)}>
-                      {PLANTS.map((pl) => (
-                        <option key={pl.id} value={pl.id}>
-                          {pl.id} {pl.name} — {materialsWithHistory(pl.id).length} materials with history
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <div className="crc-consadd-in">
-                    <span className="crc-consadd-l">Add a material</span>
-                    <MaterialInput
-                      value=""
-                      options={consOptions}
-                      state="ok"
-                      onChange={(code) => addConsMaterial(code)}
-                    />
-                    <button className="crc-linkbtn" disabled={!consOptions.length}
-                      onClick={() => setConsMats(consAvailable)}>
-                      add all {consAvailable.length}
-                    </button>
-                    {consMats.length > 0 && (
-                      <button className="crc-linkbtn" onClick={() => { setConsMats([]); setConsPick(null); }}>clear</button>
-                    )}
-                  </div>
-                </div>
-
-                {consMats.length > 0 && (
-                  <div className="crc-chips crc-chips-row">
-                    {consMats.map((m) => (
-                      <span key={m} className="crc-chip">
-                        <span className="crc-mono">{m}</span>
-                        <button onClick={() => removeConsMaterial(m)} title="Remove">×</button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {consumption.length > 0 && (
-                  <div className="crc-postats">
-                    {(() => {
-                      const flagged = consumption.filter((c) => c.status !== "ok").length;
-                      const exposed = consumption.filter((c) => c.exposed).length;
-                      const unpl = consumption.filter((c) => c.unplannedShare >= 8).length;
-                      const idle = consumption.filter((c) => c.idle >= 3).length;
-                      return [
-                        [consumption.length, `materials tracked at plant ${consPlant}`],
-                        [flagged, "with something worth a look"],
-                        [exposed, "with less cover than their lead time"],
-                        [unpl, "issuing over 8% without an order"],
-                        [idle, "not moved for three months"],
-                      ].map(([v, k], i) => (
-                        <div key={i} className="crc-postat">
-                          <div className="crc-postat-v">{v}</div>
-                          <div className="crc-postat-k">{k}</div>
-                        </div>
-                      ));
-                    })()}
-                  </div>
-                )}
-
-                {consumption.length === 0 ? (
-                  <div className="crc-empty">
-                    <div className="crc-empty-title">No materials selected</div>
-                    <p>
-                      {consAvailable.length
-                        ? `Plant ${consPlant} has ${consAvailable.length} materials with posted usage. Add one above, or add them all.`
-                        : `No material at plant ${consPlant} has posted usage history.`}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="crc-tablewrap">
-                    <table className="crc-table">
-                      <thead>
-                        <tr>
-                          <th className="crc-th-mat">Material</th>
-                          <th className="crc-num">Average / month</th>
-                          <th className="crc-num">Peak</th>
-                          <th className="crc-num">Twelve periods</th>
-                          <th className="crc-num">Swing</th>
-                          <th className="crc-num">Trend</th>
-                          <th className="crc-num">Unplanned</th>
-                          <th className="crc-num">Stock</th>
-                          <th className="crc-num">Cover</th>
-                          <th className="crc-num">Safety</th>
-                          <th>What it says</th>
-                          <th className="crc-th-act"></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {consumption.map((c) => (
-                          <tr key={c.key}
-                            className={consSel && c.key === consSel.key ? "crc-prog-on" : c.status === "late" ? "crc-tr-short" : ""}
-                            onClick={() => setConsPick(c.key)} style={{ cursor: "pointer" }}>
-                            <td className="crc-th-mat">
-                              <div className="crc-matcode">{c.mat}</div>
-                              <div className="crc-matdesc">{c.desc}</div>
-                            </td>
-                            <td className="crc-num crc-strong">{fmtQty(c.avg, c.uom)} <span className="crc-uom">{c.uom}</span></td>
-                            <td className="crc-num crc-dim">{fmtQty(c.peak, c.uom)}</td>
-                            <td className="crc-num crc-dim">{fmtQty(c.sum, c.uom)}</td>
-                            <td className={`crc-num ${c.cv >= 0.6 ? "crc-excl" : "crc-dim"}`}>{Math.round(c.cv * 100)}%</td>
-                            <td className={`crc-num ${c.trend === null ? "crc-dim" : Math.abs(c.trend) >= 25 ? "crc-excl" : "crc-dim"}`}>
-                              {c.trend === null ? "—" : `${c.trend > 0 ? "+" : ""}${c.trend}%`}
-                            </td>
-                            <td className={`crc-num ${c.unplannedShare >= 8 ? "crc-num-short" : "crc-dim"}`}>
-                              {c.unplannedShare > 0 ? `${c.unplannedShare}%` : "—"}
-                            </td>
-                            <td className="crc-num">{fmtQty(c.onHand, c.uom)}</td>
-                            <td className={`crc-num ${c.exposed ? "crc-num-short" : ""}`}>
-                              {c.coverDays === null ? "—" : `${c.coverDays} d`}
-                              {c.lead > 0 && <div className="crc-matdesc">lead {c.lead} d</div>}
-                            </td>
-                            <td className="crc-num crc-dim">
-                              {c.safety > 0
-                                ? <>{fmtQty(c.safety, c.uom)}<div className="crc-matdesc">{c.safetyDays} d</div></>
-                                : "not set"}
-                            </td>
-                            <td>
-                              {c.flags.length === 0
-                                ? <span className="crc-tag crc-tag-go">settings look right</span>
-                                : <div className="crc-actionline">{c.flags[0].text}</div>}
-                            </td>
-                            <td className="crc-th-act">
-                              <button className="crc-iconbtn crc-iconbtn-del"
-                                onClick={(e) => { e.stopPropagation(); removeConsMaterial(c.mat); }}
-                                title="Remove from the list">×</button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                <div className="crc-legend">
-                  Averages exclude the current period because it is only part complete. Cover is measured against
-                  each material's own lead time rather than a fixed number of days, since a bolt with a week's lead
-                  time and a casting with three weeks are not exposed by the same stock level. Stock and cover
-                  reflect the storage locations and batches marked in on the planning run.
-                </div>
-              </div>
-
-              {consumption.length > 1 && (
-                <div className="crc-panel crc-panel-top" id="sec-consall">
+            return (
+              <>
+                <div className="crc-panel">
                   <div className="crc-panel-head">
-                    <span>Every material side by side — twelve periods each, on its own scale</span>
+                    <span>What has actually been issued over the last twelve months</span>
+                    <span className="crc-head-right">
+                      <span className={consumption.filter((c) => c.status !== "ok").length ? "crc-panel-flag" : "crc-panel-ok"}>
+                        {consumption.length} material{consumption.length === 1 ? "" : "s"} with history
+                      </span>
+                    </span>
                   </div>
-                  <div className="crc-sparkgrid">
-                    {consumption.map((c) => (
-                      <button key={c.key}
-                        className={`crc-spark ${consSel && c.key === consSel.key ? "crc-spark-on" : ""}`}
-                        onClick={() => setConsPick(c.key)}>
-                        <div className="crc-spark-head">
-                          <span className="crc-matcode">{c.mat}</span>
-                          <span className={`crc-tag crc-tag-${c.status === "ok" ? "go" : c.status === "risk" ? "caution" : "stop"}`}>
-                            {c.status === "ok" ? "steady" : c.status === "risk" ? "watch" : "act"}
-                          </span>
-                        </div>
-                        <ConsumptionSpark h={c} />
-                        <div className="crc-spark-foot">
-                          <span>{fmtQty(c.avg, c.uom)} {c.uom} a month</span>
-                          <span className="crc-dim">
-                            {c.coverDays === null ? "" : `${c.coverDays} d cover`}
-                            {c.unplannedShare >= 8 ? ` · ${c.unplannedShare}% unplanned` : ""}
-                          </span>
-                        </div>
+
+                  <div className="crc-consfilters">
+                    <label className="crc-pickfield">
+                      <span className="crc-pickfield-l">Plant</span>
+                      <select className="crc-addso" value={consPlantSel} onChange={(e) => setConsPlantSel(e.target.value)}>
+                        <option value="">All plants</option>
+                        {PLANTS.map((p) => <option key={p.id} value={p.id}>{p.id} · {p.name}</option>)}
+                      </select>
+                    </label>
+
+                    <label className="crc-pickfield">
+                      <span className="crc-pickfield-l">Materials</span>
+                      <button
+                        className="crc-btn crc-btn-light"
+                        onClick={() => openF4(
+                          { mode: "multi", plant: consPlantSel, initial: consMatSel, title: "Materials to chart" },
+                          (codes) => setConsMatSel(codes)
+                        )}
+                      >
+                        {consMatSel.length ? `${consMatSel.length} selected` : "All materials"}
+                        <kbd className="crc-kbd2">F4</kbd>
                       </button>
-                    ))}
-                  </div>
-                  <div className="crc-legend">
-                    Each sparkline has its own vertical scale, so compare shape and trend rather than height.
-                    Amber is the part issued without an order behind it.
-                  </div>
-                </div>
-              )}
+                    </label>
 
-              {consSel && (
-                <div className="crc-panel crc-panel-top" id="sec-conschart">
-                  <div className="crc-chart">
-                    <div className="crc-chart-head">
-                      <h4>{consSel.mat}<span className="crc-head-sub">{consSel.desc}</span></h4>
-                      <p>
-                        Twelve periods of issues. The amber part of each bar went out without a production order
-                        behind it. The current period is part complete and is marked with an asterisk.
-                      </p>
-                    </div>
-                    <ConsumptionChart h={consSel} />
-                    <div className="crc-key">
-                      <span><i style={{ background: "var(--signal)" }} />Issued to an order</span>
-                      <span><i style={{ background: "var(--caution)" }} />Unplanned</span>
-                      <span><i style={{ background: "#A9BCC9" }} />Part period</span>
-                      <span><i style={{ background: "var(--ink)" }} />Average</span>
-                    </div>
+                    {consMatSel.length > 0 && (
+                      <button className="crc-linkbtn" onClick={() => setConsMatSel([])}>show all materials</button>
+                    )}
+                    <span className="crc-consfilters-note">
+                      {consPlantSel ? `plant ${consPlantSel}` : "every plant"} · {consMatSel.length ? `${consMatSel.length} chosen material${consMatSel.length === 1 ? "" : "s"}` : "every material with history"}
+                    </span>
                   </div>
 
-                  <div className="crc-postats">
-                    {[
-                      [fmtQty(consSel.avg, consSel.uom), `average per month, ${consSel.uom}`],
-                      [fmtQty(consSel.sum, consSel.uom), "issued in twelve periods"],
-                      [`${consSel.unplannedShare}%`, "went out without an order"],
-                      [consSel.coverDays === null ? "—" : `${consSel.coverDays} d`, `cover against a ${consSel.lead} day lead time`],
-                      [consSel.safety > 0 ? fmtQty(consSel.suggestedSafety, consSel.uom) : "—",
-                        consSel.safety > 0 ? `suggested safety, now ${fmtQty(consSel.safety, consSel.uom)}` : "no safety stock set"],
-                    ].map(([v, k], i) => (
-                      <div key={i} className="crc-postat">
-                        <div className="crc-postat-v">{v}</div>
-                        <div className="crc-postat-k">{k}</div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {consSel.flags.length > 0 && (
+                  {consumption.length === 0 ? (
+                    <div className="crc-empty"><p>Nothing in this filter has consumption history recorded.</p></div>
+                  ) : (
                     <>
-                      <div className="crc-subhead">What to look at</div>
-                      <ul className="crc-flaglist">
-                        {consSel.flags.map((f, i) => (
-                          <li key={i} className={`crc-flag crc-flag-${f.tone}`}>{f.text}</li>
+                      <div className="crc-postats">
+                        {[
+                          [fmtQty(r3(closedTotal), mixed ? "" : uom), `issued in 11 closed months${mixed ? ", mixed units" : `, ${uom}`}`],
+                          [`${share}%`, "issued with no order behind it"],
+                          [consumption.filter((c) => c.exposed).length, "with less cover than their lead time"],
+                          [idle, "not issued for 3 months or more"],
+                        ].map(([v, k], i) => (
+                          <div key={i} className="crc-postat">
+                            <div className="crc-postat-v">{v}</div>
+                            <div className="crc-postat-k">{k}</div>
+                          </div>
                         ))}
-                      </ul>
+                      </div>
+
+                      <div className="crc-chart">
+                        <div className="crc-chart-head">
+                          <h4>Monthly issues<span className="crc-head-sub">last 12 months, oldest first</span></h4>
+                          <p>
+                            Each bar is one month of goods issues for the materials in the filter. The amber part had
+                            no production order behind it. The final bar is the month in progress, so it is short by
+                            construction and is left out of the averages.
+                          </p>
+                        </div>
+                        <ConsumptionBars months={consChart.months} uom={uom} mixed={mixed} />
+                        <div className="crc-key">
+                          <span><i style={{ background: "var(--signal)" }} />Issued against an order</span>
+                          <span><i style={{ background: "var(--caution)" }} />Issued with no order</span>
+                          <span><i style={{ background: "var(--mark-2)" }} />Month in progress</span>
+                        </div>
+                        {mixed && (
+                          <div className="crc-chart-read">
+                            The filter spans {consChart.uoms.join(", ")}, so the bars add quantities in different units.
+                            Read the shape rather than the height, or narrow the filter to one material for a figure
+                            that means something.
+                          </div>
+                        )}
+                      </div>
                     </>
                   )}
-
-                  <div className="crc-subhead">Issue documents posted</div>
-                  {(() => {
-                    const mv = consumptionMovements(consSel.mat, consSel.plant, horizonRules);
-                    if (!mv.length) {
-                      return (
-                        <div className="crc-empty crc-empty-sm">
-                          <p>No issue documents in the retained movement history for this material.</p>
-                        </div>
-                      );
-                    }
-                    return (
-                      <div className="crc-tablewrap">
-                        <table className="crc-table">
-                          <thead>
-                            <tr>
-                              <th>Material document</th>
-                              <th>Posted</th>
-                              <th>Movement</th>
-                              <th>Against</th>
-                              <th className="crc-num">Quantity</th>
-                              <th>Location</th>
-                              <th>User</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {mv.map((g) => (
-                              <tr key={g.doc + g.item}>
-                                <td className="crc-matcode">{g.doc}<span className="crc-item">/{g.item}</span></td>
-                                <td className="crc-mono">{fmtDate(g.date)}</td>
-                                <td>
-                                  <div className="crc-matcode">{g.mvt}</div>
-                                  <div className="crc-matdesc">{g.meta.text}</div>
-                                </td>
-                                <td className="crc-mono">{g.ref || <span className="crc-dim">no reference</span>}</td>
-                                <td className={`crc-num crc-strong ${g.mvt === "262" ? "crc-mvt-plus" : "crc-mvt-minus"}`}>
-                                  {g.mvt === "262" ? "+" : "−"}{fmtQty(g.qty, consSel.uom)}
-                                </td>
-                                <td className="crc-mono">{g.sloc || <span className="crc-dim">vendor stock</span>}</td>
-                                <td>{g.user}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    );
-                  })()}
-                  <div className="crc-legend">
-                    Period totals come from the consumption update on the material, which is what forecast and
-                    reorder point planning read. The documents below are the retained movement history and will
-                    cover a shorter window than the periods above.
-                  </div>
                 </div>
-              )}
-            </>
-          )}
+
+                {consumption.length > 0 && (
+                  <div className="crc-panel crc-panel-top">
+                    <div className="crc-panel-head">
+                      <span>Material by material, with the twelve month shape and what it implies</span>
+                    </div>
+                    <div className="crc-tablewrap">
+                      <table className="crc-table">
+                        <thead>
+                          <tr>
+                            <th className="crc-th-mat">Material</th>
+                            <th>Plant</th>
+                            <th className="crc-th-spark">Last 12 months</th>
+                            <th className="crc-num">Monthly average</th>
+                            <th className="crc-num">Peak</th>
+                            <th className="crc-num">Unplanned</th>
+                            <th className="crc-num">Trend</th>
+                            <th className="crc-num">Cover</th>
+                            <th className="crc-th-act2">Reading</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {consumption.map((c) => (
+                            <tr key={c.key} className={c.status === "late" ? "crc-tr-short" : ""}>
+                              <td className="crc-th-mat">
+                                <div className="crc-matcode">{c.mat}</div>
+                                <div className="crc-matdesc">{c.desc}</div>
+                              </td>
+                              <td className="crc-mono">{c.plant}</td>
+                              <td className="crc-th-spark">
+                                <Sparkline values={c.periods.map((p) => p.total)} />
+                              </td>
+                              <td className="crc-num">{fmtQty(c.avg, c.uom)} <span className="crc-uom">{c.uom}</span></td>
+                              <td className="crc-num">{fmtQty(c.peak, c.uom)}</td>
+                              <td className={`crc-num ${c.unplannedShare >= 8 ? "crc-excl" : ""}`}>
+                                {c.unplannedShare > 0 ? `${c.unplannedShare}%` : <span className="crc-dim">—</span>}
+                              </td>
+                              <td className={`crc-num ${c.trend === null ? "crc-dim" : c.trend >= 25 ? "crc-excl" : c.trend <= -25 ? "crc-num-short" : ""}`}>
+                                {c.trend === null ? "—" : `${c.trend > 0 ? "+" : ""}${c.trend}%`}
+                              </td>
+                              <td className={`crc-num ${c.exposed ? "crc-num-short" : ""}`}>
+                                {c.coverDays === null ? <span className="crc-dim">—</span> : `${c.coverDays} d`}
+                              </td>
+                              <td className="crc-th-act2">
+                                <StatusTag status={c.status === "ok" ? "ok" : c.status === "risk" ? "coverable" : "late"} />
+                                <div className="crc-actionline">
+                                  {c.flags.length ? c.flags[0].text : "Usage is steady and covered against its lead time."}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="crc-legend">
+                      Averages and trend use the eleven closed months; the month in progress is excluded so a
+                      part-month does not drag the rate down. Cover is issuable stock divided by the average daily
+                      run rate, measured against the material's lead time.
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
 
           {/* ---- PRODUCTION ORDERS ---- */}
           {tab === "prod" && (
@@ -6278,7 +5901,7 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
 
                   <div className="crc-subhead">Production orders</div>
                   <div className="crc-tablewrap">
-                    <table className="crc-table">
+                    <table className="crc-table crc-bold-data">
                       <thead>
                         <tr>
                           <th>Order</th>
@@ -6756,88 +6379,6 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
             </div>
           )}
 
-          {/* ---- SAP MAPPING ---- */}
-          {tab === "sap" && (
-            <div className="crc-panel">
-              <div className="crc-panel-head">
-                <span>Where each dataset comes from in SAP, and the adapter that reshapes it</span>
-              </div>
-              <div className="crc-sapintro">
-                <p>
-                  Each area lists the underlying tables and the released CDS view that exposes the same data on
-                  S/4HANA. Prefer the CDS view: it applies the joins, language and status filters that a raw table
-                  read leaves to you.
-                </p>
-                <p>
-                  The screen runs on demo data shaped the way the engine wants it. To point it at a real system,
-                  replace each constant below with the output of its adapter in <span className="crc-mono">SAP_ADAPTERS</span>,
-                  which takes rows still carrying SAP field names. Nothing in the calculation changes.
-                </p>
-                <p>
-                  Extract everything in one pass with a single timestamp. Pegging in particular is the result of the
-                  last MRP run rather than a stored field, so a stock extract from this morning read against a
-                  pegging extract from last night will quietly disagree.
-                </p>
-              </div>
-
-              {SAP_SOURCES.map((src) => (
-                <section key={src.area} className="crc-sap">
-                  <div className="crc-sap-head">
-                    <div>
-                      <h4>{src.area}</h4>
-                      <div className="crc-sap-target">
-                        replaces <span className="crc-mono">{src.target}</span>
-                      </div>
-                    </div>
-                    <div className="crc-sap-meta">
-                      <div><dt>CDS view</dt><dd className="crc-mono crc-sap-fld">{src.cds}</dd></div>
-                      <div><dt>Read via</dt><dd>{src.read}</dd></div>
-                      <div><dt>Transaction</dt><dd>{src.tcode}</dd></div>
-                    </div>
-                  </div>
-
-                  <div className="crc-sap-tables">
-                    {src.tables.map((t) => (
-                      <span key={t.t} className="crc-sap-table">
-                        <span className="crc-mono">{t.t}</span>
-                        <span className="crc-sap-tt">{t.text}</span>
-                        <span className="crc-sap-key">key {t.key}</span>
-                      </span>
-                    ))}
-                  </div>
-
-                  <table className="crc-conttable crc-saptable">
-                    <thead>
-                      <tr>
-                        <th>Field here</th>
-                        <th>SAP field</th>
-                        <th>Meaning</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {src.fields.map(([app, sap, note]) => (
-                        <tr key={app + sap}>
-                          <td className="crc-mono">{app}</td>
-                          <td className="crc-mono crc-sap-fld">{sap}</td>
-                          <td className="crc-dim">{note}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-
-                  {src.note && <div className="crc-sap-note">{src.note}</div>}
-                </section>
-              ))}
-
-              <div className="crc-legend">
-                Storage location stock needs one row per stock category, not per location: MARD holds unrestricted,
-                quality inspection and blocked quantities in separate fields on the same row, and this screen treats
-                them as separate locations so they can be excluded independently. The stock adapter takes a mapping
-                function for exactly that.
-              </div>
-            </div>
-          )}
-
           {/* ---- SUMMARY ---- */}
           {tab === "summary" && (
             <>
@@ -6851,7 +6392,7 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
               <div className="crc-report" id="sec-sumhead">
                 <div className="crc-report-head">
                   <div>
-                    <div className="crc-report-t">Component readiness and capacity report</div>
+                    <div className="crc-report-t">{APP_NAME} — component readiness and capacity report</div>
                     <div className="crc-report-s">
                       Plant{programme.plants.length > 1 ? "s" : ""} {programme.plants.join(", ")} ·
                       {" "}{programme.lines.length} planning line{programme.lines.length === 1 ? "" : "s"} ·
@@ -6860,6 +6401,7 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                     <div className="crc-report-s">Generated {fmtDateLong(t0)}</div>
                   </div>
                   <div className="crc-report-actions">
+                      <button className="crc-btn" onClick={() => setExportOpen(true)}>Export…</button>
                     <button className="crc-btn crc-btn-light" onClick={() => {
                       const text = summaryText({ summary, programme, t0, weeks, ai: aiSummary });
                       if (navigator.clipboard) navigator.clipboard.writeText(text).then(
@@ -6959,7 +6501,16 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
                 <div className="crc-panel-head">
                   <span>Findings — grouped by root cause, worst first</span>
                   <span className="crc-head-right">
-                    <span className="crc-panel-flag">{summary.issues.length} item{summary.issues.length === 1 ? "" : "s"}</span>
+                    <span className="crc-sevcounts">
+                      {[["critical", "Act today", "stop"], ["warning", "This week", "caution"], ["watch", "Watch", "signal"]].map(([k, label, tone]) => {
+                        const n = summary.issues.filter((x) => x.sev === k).length;
+                        return (
+                          <span key={k} className={n ? `crc-sevcount crc-sevcount-${tone}` : "crc-sevcount crc-sevcount-off"}>
+                            <b>{n}</b> {label}
+                          </span>
+                        );
+                      })}
+                    </span>
                   </span>
                 </div>
                 <div className="crc-sevkey">
@@ -7055,153 +6606,6 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
             </>
           )}
 
-          {/* ---- ANALYSIS ---- */}
-          {tab === "analysis" && (
-            <div className="crc-panel">
-              <div className="crc-analysis">
-                <div className="crc-readout">
-                  <h4>What the numbers say</h4>
-                  <p>
-                    Against a demand of {fmtQty(Number(orderQty) || 0, "EA")} {matInfo(fgCode).uom} of {fgCode} at plant {plant},
-                    {result.shortLines.length === 0
-                      ? " every component clears. The kit is complete and the order can go to the shop floor."
-                      : ` ${result.shortLines.length} of ${result.lines.filter((l) => !l.isAssembly).length} components fall short.`}
-                    {result.buildable > 0 && result.buildable < Number(orderQty) && (
-                      <> You can start a partial run of {result.buildable} today; {result.tightest.code} is what caps it.</>
-                    )}
-                    {result.buildable === 0 && result.shortLines.length > 0 && (
-                      <> Nothing can be built today — {result.tightest.code} has no usable stock.</>
-                    )}
-                  </p>
-                  {result.shortLines.length > 0 && (
-                    <p>
-                      The full kit lands {fmtDateLong(result.fullKit)}
-                      {result.fullKit > needBy
-                        ? `, which is ${diffDays(result.fullKit, needBy)} days later than the ${fmtDate(needBy)} start you asked for.`
-                        : `, inside the ${fmtDate(needBy)} start date.`}
-                      {result.critical && ` The date is set by ${result.critical.code}; nothing else on the list moves it.`}
-                      {" "}
-                      {(() => {
-                        const t = { transfer: 0, sto: 0, expedite: 0, pr: 0 };
-                        result.shortLines.forEach((l) =>
-                          l.resolution.steps.forEach((s) => { if (t[s.kind] !== undefined) t[s.kind]++; })
-                        );
-                        const parts = [];
-                        if (t.transfer) parts.push(`${t.transfer} internal transfer${t.transfer > 1 ? "s" : ""}`);
-                        if (t.sto) parts.push(`${t.sto} inter-plant transfer${t.sto > 1 ? "s" : ""}`);
-                        if (t.expedite) parts.push(`${t.expedite} purchase order${t.expedite > 1 ? "s" : ""} to expedite`);
-                        if (t.pr) parts.push(`${t.pr} new requisition${t.pr > 1 ? "s" : ""}`);
-                        return parts.length ? `Closing the gap takes ${parts.join(", ")}.` : "";
-                      })()}
-                    </p>
-                  )}
-                  {(() => {
-                    const counted = commitments.resv.filter((r) => r.counted);
-                    const pegged = commitments.supply.filter((s) => s.pegged > 0);
-                    if (!counted.length && !pegged.length) return null;
-                    return (
-                      <p>
-                        {counted.length > 0 && (
-                          <>Other released orders hold {counted.length} open reservation{counted.length > 1 ? "s" : ""} against these materials, which is why on-hand and available differ. </>
-                        )}
-                        {pegged.length > 0 && excludePegged && (
-                          <>{pegged.length} inbound document{pegged.length > 1 ? "s are" : " is"} partly pegged to demand a previous MRP run already planned for, so only the free balance has been used here.</>
-                        )}
-                      </p>
-                    );
-                  })()}
-                  {resPolicy === "none" && (
-                    <p className="crc-warnline">
-                      Reservations are being ignored, so stock committed to other orders is counted as free.
-                      Agree the re-allocation with the planners who own those orders before releasing.
-                    </p>
-                  )}
-                  {!excludePegged && (
-                    <p className="crc-warnline">
-                      Pegged supply is being counted as available. The same receipt is now promised to two orders —
-                      whichever draws it first leaves the other short.
-                    </p>
-                  )}
-                </div>
-
-                {result.shortLines.length > 0 && (
-                  <div className="crc-chart crc-chart-flat">
-                    <div className="crc-chart-head">
-                      <h4>Size of each gap</h4>
-                      <p>Shortfall as a share of what the order needs, worst first.</p>
-                    </div>
-                    <ShortfallBars lines={result.shortLines} />
-                  </div>
-                )}
-
-                <div className="crc-aibox">
-                  <div className="crc-aibox-head">
-                    <div>
-                      <h4>Sequenced action plan</h4>
-                      <p>Turns the shortage list into dated actions with an owner against each one.</p>
-                    </div>
-                    <button className="crc-btn" onClick={draftPlan} disabled={aiBusy || result.shortLines.length === 0}>
-                      {aiBusy ? "Drafting…" : aiPlan ? "Redraft plan" : "Draft action plan"}
-                    </button>
-                  </div>
-
-                  {result.shortLines.length === 0 && (
-                    <div className="crc-empty crc-empty-sm">
-                      <p>No shortages to plan around. Release the order.</p>
-                    </div>
-                  )}
-
-                  {aiError && <div className="crc-error">{aiError}</div>}
-
-                  {aiPlan && (
-                    <div className="crc-plan">
-                      <p className="crc-plan-headline">{aiPlan.headline}</p>
-                      {aiPlan.criticalPath && (
-                        <div className="crc-critical">
-                          <span>Critical path</span>
-                          <p>{aiPlan.criticalPath}</p>
-                        </div>
-                      )}
-                      <div className="crc-tablewrap">
-                        <table className="crc-table crc-plantable">
-                          <thead>
-                            <tr>
-                              <th className="crc-num">#</th>
-                              <th>Action</th>
-                              <th>Material</th>
-                              <th className="crc-num">Quantity</th>
-                              <th>Owner</th>
-                              <th>Due by</th>
-                              <th>If it slips</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(aiPlan.actions || []).map((a, i) => (
-                              <tr key={i}>
-                                <td className="crc-num crc-dim">{a.seq ?? i + 1}</td>
-                                <td className="crc-strong">{a.action}</td>
-                                <td className="crc-mono">{a.material}</td>
-                                <td className="crc-num crc-mono">{a.qty}</td>
-                                <td>{a.owner}</td>
-                                <td className="crc-mono">{a.dueBy}</td>
-                                <td className="crc-dim">{a.impact}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      {aiPlan.watchOuts && aiPlan.watchOuts.length > 0 && (
-                        <div className="crc-watch">
-                          <div className="crc-watch-title">Watch outs</div>
-                          <ul>{aiPlan.watchOuts.map((w, i) => <li key={i}>{w}</li>)}</ul>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
         </main>
       </div>
       <ScrollTop />
@@ -7216,8 +6620,15 @@ Respond with ONLY a JSON object, no markdown fences and no preamble:
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
+/* Every colour in this sheet resolves through a token below, which is what makes
+   the dark theme a palette swap rather than a second stylesheet. Two pairs are
+   deliberately not inverted: --head-bg is the masthead and rail, which stay the
+   darkest surface in both themes, and --invert-bg / --invert-ink are the dark
+   chips (primary buttons, the active tab, the scroll-to-top control). */
 .crc-root{
+  color-scheme:light;
   --paper:#E6EBF0; --panel:#FFFFFF; --panel-2:#F7F9FB;
+  --tint:#F4F7F9; --tint2:#FBFCFD; --track:#E7ECEF; --neutral-bg:#EFF1F3;
   --ink:#14212A; --ink2:#4C606D; --ink3:#647887;
   --rule:#C2CDD6; --rule-soft:#E1E7EC;
   --go:#1B6E4C; --go-bg:#E0EDE6;
@@ -7225,15 +6636,72 @@ const CSS = `
   --stop:#A32D1B; --stop-bg:#F7E0DB;
   --signal:#235A8C; --signal-bg:#E1EAF3;
   --brass:#C0803A; --brass-bg:#F7EDDF;
+
+  --head-bg:#14212A;
+  --head-ink:#E7EDF2; --head-ink2:#A6B8C4; --head-ink3:#8DA2B0;
+  --rail-ink:#AFC0CD; --rail-ink2:#8FA5B3; --rail-ink3:#6E8494;
+  --invert-bg:#14212A; --invert-ink:#FFFFFF; --ink-hover:#0F1A22;
+  --go-lamp:#3FA377; --caution-lamp:#D89A2E; --stop-lamp:#D9563E;
+  --go-word:#7FD1AC; --caution-word:#F0BE6A; --stop-word:#F09A85;
+  --stop-soft:#FDF6F4; --stop-ink:#8C2717;
+  --caution-soft:#FFFCF6; --caution-ink:#7A4D04;
+  --caution-row:#FEFBF5; --caution-row2:#FBF4E8;
+  --signal-ink:#26527D; --teal-ink:#16706B;
+  --brass-ink:#1A1206; --brass-ink2:#7A4E12; --brass-bg2:#F3E5D2; --brass-rule:#F0E4CE;
+  --badge-bg:#7A1E10;
+  --gap-a:#F0D9D3; --gap-b:#F8E9E5;
+  --grid:rgba(20,33,42,.030);
+  /* white wherever the surface is dark in both themes: the rail, the alert badge */
+  --on-dark:#FFFFFF; --sticky-bg:rgba(255,255,255,.92);
+
+  /* chart marks: series colours and the fixed roles on the timeline charts */
+  --seq-1:#2C5D8F; --seq-2:#1F7A54; --seq-3:#A96A05;
+  --seq-4:#16706B; --seq-5:#7A4E6E; --seq-6:#7C97AC;
+  --mark-1:#7C97AC; --mark-2:#A9BCC9; --mark-3:#B4C6D2; --mark-4:#8FA8C0;
+  --mark-run:#C6813A; --mark-green:#8FBFA6; --mark-green2:#4E8C6E; --mark-rust:#9C4A22;
+
   font-family:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
   color:var(--ink);
   /* engineering paper: a printed grid, barely there */
   background:
-    linear-gradient(rgba(20,33,42,.030) 1px, transparent 1px) 0 0 / 100% 24px,
-    linear-gradient(90deg, rgba(20,33,42,.030) 1px, transparent 1px) 0 0 / 24px 100%,
+    linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 100% 24px,
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 24px 100%,
     var(--paper);
   min-height:100vh; font-size:13px; line-height:1.5;
   -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+
+/* Dark is a working shop-floor theme, not an inversion: surfaces stay blue-grey
+   rather than black so the status colours keep their meaning, and the semantic
+   tints go dark-with-bright-text instead of pale-with-dark-text. */
+.crc-root[data-theme="dark"]{
+  color-scheme:dark;
+  --paper:#0E161C; --panel:#17222B; --panel-2:#1C2933;
+  --tint:#22303B; --tint2:#1B2831; --track:#2A3945; --neutral-bg:#28363F;
+  --ink:#E3EBF1; --ink2:#A9BDC9; --ink3:#8398A6;
+  --rule:#33454F; --rule-soft:#26343D;
+  --go:#5CC08D; --go-bg:#122C22;
+  --caution:#E0A63C; --caution-bg:#33280F;
+  --stop:#EE7A63; --stop-bg:#3A1D18;
+  --signal:#6FA9DC; --signal-bg:#14293C;
+  --brass:#D09B54; --brass-bg:#302410;
+
+  --head-bg:#0A1015;
+  --invert-bg:#354A59; --invert-ink:#EDF3F7; --ink-hover:#41586A;
+  --stop-soft:#2A1714; --stop-ink:#F0A08C;
+  --caution-soft:#2A2210; --caution-ink:#E8B75E;
+  --caution-row:#26200E; --caution-row2:#332A14;
+  --signal-ink:#8FBEE8; --teal-ink:#5FBFB8;
+  --brass-ink:#1A1206; --brass-ink2:#E5C089; --brass-bg2:#3A2C14; --brass-rule:#4A3A1C;
+  --gap-a:#3A211C; --gap-b:#2E1A16;
+  --grid:rgba(255,255,255,.026);
+  --sticky-bg:rgba(23,34,43,.93);
+
+  /* The pale slate marks already read on a dark panel and keep their relative
+     weight, so only the ones that were dark enough to disappear are lifted. */
+  --seq-1:#6C9FD4; --seq-2:#58B487; --seq-3:#D9A24A;
+  --seq-4:#4FB3AC; --seq-5:#C08AAE; --seq-6:#9FB6C7;
+  --mark-green2:#6FB894; --mark-rust:#D2764A;
 }
 .crc-root *{box-sizing:border-box;}
 .crc-root h3,.crc-root h4{margin:0;font-weight:600;}
@@ -7244,17 +6712,39 @@ const CSS = `
 @media(prefers-reduced-motion:reduce){.crc-root *{transition:none!important;animation:none!important;}}
 
 /* ---- header: the state masthead is where the boldness goes ---- */
-.crc-header{background:var(--ink);color:#E7EDF2;
+.crc-header{background:var(--head-bg);color:var(--head-ink);
   box-shadow:inset 0 -1px 0 rgba(255,255,255,.07), 0 1px 0 rgba(20,33,42,.18);}
-.crc-header-in{max-width:1460px;margin:0 auto;padding:16px 24px 14px;display:flex;
+.crc-header-in{max-width:1460px;margin:0 auto;padding:20px 26px 18px;display:flex;
   align-items:center;justify-content:space-between;gap:28px;flex-wrap:wrap;}
-.crc-brand{display:flex;align-items:center;gap:12px;flex:none;}
-.crc-brand-mark{width:26px;height:26px;border:2px solid var(--brass);border-radius:2px;flex:none;
-  background:
-    linear-gradient(135deg,transparent 44%,var(--brass) 44%,var(--brass) 56%,transparent 56%),
-    linear-gradient(45deg,transparent 44%,rgba(192,128,58,.4) 44%,rgba(192,128,58,.4) 56%,transparent 56%);}
-.crc-brand-name{font-size:16px;font-weight:600;letter-spacing:-0.012em;line-height:1.2;}
-.crc-brand-sub{font-size:11.5px;color:#8DA2B0;margin-top:2px;}
+.crc-brand{display:flex;align-items:center;gap:15px;flex:none;}
+.crc-brand-name{font-size:20px;font-weight:600;letter-spacing:-0.014em;line-height:1.2;}
+
+/* ---- InfraBeat wordmark ----
+   Brand colours are fixed, so the mark keeps its own white plate rather than
+   inheriting the masthead. That holds in both themes and in print. The plate is
+   sized to read as the identity of the page, not as a favicon next to a title. */
+.crc-logo{display:inline-flex;align-items:center;background:#FFFFFF;border-radius:4px;
+  padding:10px 15px;flex:none;font-weight:700;font-size:24px;letter-spacing:-0.022em;line-height:1;
+  box-shadow:0 1px 2px rgba(0,0,0,.28), 0 0 0 1px rgba(255,255,255,.14);}
+.crc-logo-a{color:#1B9DD9;}
+.crc-logo-b{color:#E1251B;}
+.crc-logo-img{height:48px;width:auto;display:block;background:#FFFFFF;border-radius:4px;
+  padding:7px 11px;flex:none;box-shadow:0 1px 2px rgba(0,0,0,.28), 0 0 0 1px rgba(255,255,255,.14);}
+@media(max-width:640px){
+  .crc-logo{font-size:19px;padding:8px 12px;}
+  .crc-logo-img{height:38px;}
+  .crc-brand-name{font-size:17px;}
+}
+
+/* ---- header tools ---- */
+.crc-headtools{display:flex;align-items:center;gap:8px;flex:none;order:3;}
+.crc-themebtn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;
+  font-size:15px;color:var(--head-ink);background:rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.14);border-radius:3px;cursor:pointer;line-height:1;}
+.crc-themebtn:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.24);}
+.crc-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}
+
+.crc-brand-sub{font-size:12.5px;color:var(--head-ink3);margin-top:3px;}
 
 .crc-state{display:flex;align-items:center;gap:20px;flex:1 1 520px;min-width:0;
   background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.09);
@@ -7264,31 +6754,23 @@ const CSS = `
 .crc-state-blocked{border-left-color:var(--stop);}
 .crc-state-lamp{width:9px;height:9px;border-radius:50%;flex:none;background:var(--ink3);
   box-shadow:0 0 0 3px rgba(255,255,255,.07);}
-.crc-state-release .crc-state-lamp{background:#3FA377;box-shadow:0 0 0 3px rgba(63,163,119,.22);}
-.crc-state-coverable .crc-state-lamp{background:#D89A2E;box-shadow:0 0 0 3px rgba(216,154,46,.22);}
-.crc-state-blocked .crc-state-lamp{background:#D9563E;box-shadow:0 0 0 3px rgba(217,86,62,.22);
+.crc-state-release .crc-state-lamp{background:var(--go-lamp);box-shadow:0 0 0 3px rgba(63,163,119,.22);}
+.crc-state-coverable .crc-state-lamp{background:var(--caution-lamp);box-shadow:0 0 0 3px rgba(216,154,46,.22);}
+.crc-state-blocked .crc-state-lamp{background:var(--stop-lamp);box-shadow:0 0 0 3px rgba(217,86,62,.22);
   animation:crc-pulse 2.6s ease-in-out infinite;}
 @keyframes crc-pulse{0%,100%{box-shadow:0 0 0 3px rgba(217,86,62,.22);}50%{box-shadow:0 0 0 6px rgba(217,86,62,.05);}}
 .crc-state-body{min-width:0;flex:1 1 auto;}
 .crc-state-word{font-size:19px;font-weight:600;letter-spacing:-0.015em;line-height:1.15;}
-.crc-state-release .crc-state-word{color:#7FD1AC;}
-.crc-state-coverable .crc-state-word{color:#F0BE6A;}
-.crc-state-blocked .crc-state-word{color:#F09A85;}
-.crc-state-line{font-size:12px;color:#A6B8C4;margin-top:2px;
+.crc-state-release .crc-state-word{color:var(--go-word);}
+.crc-state-coverable .crc-state-word{color:var(--caution-word);}
+.crc-state-blocked .crc-state-word{color:var(--stop-word);}
+.crc-state-line{font-size:12px;color:var(--head-ink2);margin-top:2px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .crc-state-figs{display:flex;gap:22px;flex:none;}
 .crc-state-v{display:block;font-family:'IBM Plex Mono',monospace;font-size:19px;font-weight:600;
-  font-variant-numeric:tabular-nums;letter-spacing:-0.02em;color:#E7EDF2;line-height:1.15;}
-.crc-state-v em{font-style:normal;font-size:13px;font-weight:400;color:#7F929F;}
-.crc-state-k{display:block;font-size:10.5px;color:#8DA2B0;margin-top:2px;}
-
-.crc-header-strip{max-width:1460px;margin:0 auto;padding:0 24px 11px;display:flex;gap:20px;
-  flex-wrap:wrap;font-size:11px;color:#8DA2B0;}
-.crc-header-strip span{position:relative;}
-.crc-header-strip span+span::before{content:"";position:absolute;left:-10px;top:4px;bottom:2px;
-  width:1px;background:rgba(255,255,255,.13);}
-.crc-header-date{margin-left:auto;font-family:'IBM Plex Mono',monospace;}
-@media(max-width:900px){.crc-header-date{margin-left:0;}}
+  font-variant-numeric:tabular-nums;letter-spacing:-0.02em;color:var(--head-ink);line-height:1.15;}
+.crc-state-v em{font-style:normal;font-size:13px;font-weight:400;color:var(--head-ink3);}
+.crc-state-k{display:block;font-size:10.5px;color:var(--head-ink3);margin-top:2px;}
 
 /* ---- shell ---- */
 .crc-shell{max-width:1460px;margin:0 auto;padding:20px 24px 64px;
@@ -7307,14 +6789,14 @@ const CSS = `
 .crc-field:last-child{margin-bottom:0;}
 .crc-field>span{display:block;font-size:12px;color:var(--ink2);margin-bottom:4px;}
 .crc-field input,.crc-field select{
-  width:100%;padding:7px 8px;border:1px solid var(--rule);border-radius:2px;background:#fff;
+  width:100%;padding:7px 8px;border:1px solid var(--rule);border-radius:2px;background:var(--panel);
   font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--ink);}
 .crc-field select{font-family:'IBM Plex Sans',sans-serif;}
 .crc-field-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 
 .crc-slocs{display:flex;flex-direction:column;gap:2px;}
-.crc-sloc{padding:8px;border:1px solid var(--rule-soft);border-radius:2px;background:#fff;}
-.crc-sloc-off{background:#F5F7F9;border-style:dashed;}
+.crc-sloc{padding:8px;border:1px solid var(--rule-soft);border-radius:2px;background:var(--panel);}
+.crc-sloc-off{background:var(--tint);border-style:dashed;}
 .crc-sloc-off .crc-sloc-name,.crc-sloc-off .crc-sloc-code{color:var(--ink3);}
 .crc-sloc-main{display:flex;align-items:center;gap:8px;cursor:pointer;}
 .crc-sloc-main input{accent-color:var(--signal);width:15px;height:15px;flex:none;}
@@ -7330,12 +6812,12 @@ const CSS = `
 .crc-rule-title{font-size:13px;font-weight:600;}
 .crc-rule-help{font-size:12px;color:var(--ink2);margin-top:2px;line-height:1.45;}
 .crc-seg{display:flex;margin-top:8px;border:1px solid var(--rule);border-radius:2px;overflow:hidden;}
-.crc-seg-btn{flex:1;background:#fff;border:0;border-right:1px solid var(--rule);padding:6px 4px;
+.crc-seg-btn{flex:1;background:var(--panel);border:0;border-right:1px solid var(--rule);padding:6px 4px;
   font-family:inherit;font-size:11.5px;color:var(--ink2);cursor:pointer;line-height:1.3;}
 .crc-seg-btn:last-child{border-right:0;}
-.crc-seg-btn:hover{background:#F4F7F9;}
-.crc-seg-on{background:var(--ink);color:#fff;font-weight:500;}
-.crc-seg-on:hover{background:var(--ink);}
+.crc-seg-btn:hover{background:var(--tint);}
+.crc-seg-on{background:var(--invert-bg);color:var(--invert-ink);font-weight:500;}
+.crc-seg-on:hover{background:var(--invert-bg);}
 .crc-rule-echo{margin-top:6px;font-size:11.5px;color:var(--ink3);line-height:1.45;}
 
 .crc-subhead{padding:14px 16px 8px;font-size:12px;font-weight:600;
@@ -7343,7 +6825,7 @@ const CSS = `
 .crc-tr-muted td{opacity:.5;}
 .crc-resv{color:var(--caution);}
 .crc-inbound{color:var(--signal);}
-.crc-tag-neutral{background:#EFF1F3;color:var(--ink2);}
+.crc-tag-neutral{background:var(--neutral-bg);color:var(--ink2);}
 
 /* ---- charts ---- */
 .crc-svg{width:100%;height:auto;display:block;font-family:'IBM Plex Sans',sans-serif;}
@@ -7360,12 +6842,15 @@ const CSS = `
 .crc-key span{display:flex;align-items:center;gap:6px;}
 .crc-key i{width:11px;height:9px;border-radius:1px;display:block;}
 
-.crc-cbar{width:76px;height:7px;background:#E7ECEF;border-radius:1px;overflow:hidden;}
+.crc-cbar{width:76px;height:7px;background:var(--track);border-radius:1px;overflow:hidden;}
 .crc-cbar-fill{height:100%;border-radius:1px;}
 .crc-th-cov{width:88px;}
+/* wide enough that "see components below" sits on one or two lines rather than
+   three, which is what was making these rows so tall */
+.crc-th-covby{min-width:132px;}
 
 .crc-strip{margin-top:14px;}
-.crc-strip-bar{display:flex;height:7px;border-radius:1px;overflow:hidden;background:#E7ECEF;}
+.crc-strip-bar{display:flex;height:7px;border-radius:1px;overflow:hidden;background:var(--track);}
 .crc-strip-seg{height:100%;}
 .crc-strip-key{display:flex;flex-wrap:wrap;gap:14px;margin-top:7px;font-size:11.5px;color:var(--ink2);}
 .crc-strip-key span{display:flex;align-items:center;gap:5px;}
@@ -7374,7 +6859,7 @@ const CSS = `
 .crc-sfbars{display:flex;flex-direction:column;gap:7px;}
 .crc-sfrow{display:grid;grid-template-columns:132px minmax(0,1fr) 42px 122px;gap:11px;align-items:center;}
 .crc-sf-code{font-family:'IBM Plex Mono',monospace;font-size:12px;}
-.crc-sf-track{height:11px;background:#E7ECEF;border-radius:1px;overflow:hidden;}
+.crc-sf-track{height:11px;background:var(--track);border-radius:1px;overflow:hidden;}
 .crc-sf-fill{height:100%;}
 .crc-sf-pct{font-family:'IBM Plex Mono',monospace;font-size:12px;text-align:right;font-variant-numeric:tabular-nums;}
 .crc-sf-qty{font-size:11.5px;color:var(--ink3);}
@@ -7391,11 +6876,11 @@ const CSS = `
 .crc-tree-sub>.crc-tnode::before{content:"";position:absolute;left:-15px;top:17px;
   width:11px;height:1px;background:var(--rule);}
 .crc-tcard{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;
-  border:1px solid var(--rule-soft);border-left-width:3px;border-radius:2px;padding:9px 12px;background:#fff;}
+  border:1px solid var(--rule-soft);border-left-width:3px;border-radius:2px;padding:9px 12px;background:var(--panel);}
 .crc-t-ok{border-left-color:var(--go);}
 .crc-t-coverable{border-left-color:var(--caution);}
 .crc-t-late{border-left-color:var(--stop);}
-.crc-t-assembly{border-left-color:var(--signal);background:#FBFCFD;}
+.crc-t-assembly{border-left-color:var(--signal);background:var(--tint2);}
 .crc-tcard-id{display:flex;flex-direction:column;gap:1px;min-width:200px;}
 .crc-tcard-figs{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
 .crc-tqty{font-family:'IBM Plex Mono',monospace;font-size:12px;font-variant-numeric:tabular-nums;}
@@ -7410,12 +6895,14 @@ const CSS = `
   .crc-root{background:#fff;}
   .crc-header{background:#fff;color:var(--ink);border-bottom:2px solid var(--ink);box-shadow:none;}
   .crc-brand-name,.crc-brand-sub,.crc-state-word,.crc-state-v,.crc-state-k,
-  .crc-state-line,.crc-header-strip{color:var(--ink)!important;}
+  .crc-state-line{color:var(--ink)!important;}
   .crc-state{background:none;border-color:var(--rule);}
   .crc-root{background:#fff!important;}
   .crc-panel,.crc-programme,.crc-section{box-shadow:none;}
   .crc-shell{display:block;padding:0;max-width:none;}
-  .crc-controls,.crc-tabs,.crc-btn,.crc-rail,.crc-sumbtn,.crc-report-actions{display:none!important;}
+  .crc-controls,.crc-tabs,.crc-btn,.crc-rail,.crc-sumbtn,.crc-report-actions,
+  .crc-headtools{display:none!important;}
+  .crc-logo{box-shadow:none;border:1px solid var(--rule);}
   .crc-report{border-top-width:3px;}
   .crc-issue{break-inside:avoid;}
   .crc-sumgrid{grid-template-columns:repeat(4,1fr);}
@@ -7442,7 +6929,7 @@ const CSS = `
 .crc-report-t{font-size:20px;font-weight:600;letter-spacing:-0.02em;}
 .crc-report-s{font-size:12px;color:var(--ink2);margin-top:3px;}
 .crc-report-actions{display:flex;gap:8px;align-items:flex-start;}
-.crc-report-lines th{background:#F7F9FA;}
+.crc-report-lines th{background:var(--tint);}
 .crc-sevkey{padding:11px 16px;border-bottom:1px solid var(--rule-soft);display:flex;
   flex-direction:column;gap:5px;font-size:12px;color:var(--ink2);}
 .crc-sevkey span{display:flex;align-items:baseline;gap:8px;}
@@ -7459,9 +6946,9 @@ const CSS = `
 .crc-chips-row{padding:11px 16px;border-bottom:1px solid var(--rule-soft);}
 .crc-sparkgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:1px;
   background:var(--rule-soft);border-bottom:1px solid var(--rule-soft);}
-.crc-spark{background:#fff;border:0;border-left:3px solid transparent;padding:11px 13px;
+.crc-spark{background:var(--panel);border:0;border-left:3px solid transparent;padding:11px 13px;
   font-family:inherit;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:6px;}
-.crc-spark:hover{background:#F7F9FA;}
+.crc-spark:hover{background:var(--tint);}
 .crc-spark-on{border-left-color:var(--brass);background:var(--brass-bg);}
 .crc-spark-on:hover{background:var(--brass-bg);}
 .crc-spark-head{display:flex;align-items:center;justify-content:space-between;gap:8px;}
@@ -7487,28 +6974,28 @@ const CSS = `
   box-shadow:1px 0 0 var(--rule-soft);}
 .crc-matrix thead .crc-th-mat{z-index:5;background:var(--panel-2);}
 .crc-matrix tbody tr:hover .crc-th-mat{background:var(--panel-2);}
-.crc-jump{display:flex;align-items:center;gap:6px;flex-wrap:wrap;background:rgba(255,255,255,.92);
+.crc-jump{display:flex;align-items:center;gap:6px;flex-wrap:wrap;background:var(--sticky-bg);
   backdrop-filter:blur(6px);border:1px solid var(--rule);border-radius:3px;padding:8px 12px;
   margin-bottom:16px;position:sticky;top:8px;z-index:20;box-shadow:0 1px 3px rgba(20,33,42,.07);}
 .crc-jump-l{font-size:11px;color:var(--ink3);margin-right:4px;}
-.crc-jumpbtn{background:#F4F7F9;border:1px solid var(--rule-soft);border-radius:2px;padding:4px 10px;
+.crc-jumpbtn{background:var(--tint);border:1px solid var(--rule-soft);border-radius:2px;padding:4px 10px;
   font-family:inherit;font-size:12px;color:var(--ink2);cursor:pointer;display:flex;align-items:center;gap:6px;}
-.crc-jumpbtn:hover{background:var(--brass-bg);color:#7A4E12;border-color:var(--brass);}
+.crc-jumpbtn:hover{background:var(--brass-bg);color:var(--brass-ink2);border-color:var(--brass);}
 .crc-jumpcount{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--ink3);}
-.crc-totop{position:fixed;right:22px;bottom:22px;z-index:40;background:var(--ink);color:#fff;
+.crc-totop{position:fixed;right:22px;bottom:22px;z-index:40;background:var(--invert-bg);color:var(--invert-ink);
   border:0;border-radius:3px;padding:9px 13px;font-family:inherit;font-size:12px;cursor:pointer;
   display:flex;align-items:center;gap:7px;box-shadow:0 3px 12px rgba(27,42,51,.28);}
-.crc-totop:hover{background:#0F1A22;}
+.crc-totop:hover{background:var(--ink-hover);}
 @media print{.crc-jump,.crc-totop{display:none!important;}}
-.crc-sumbtn{background:var(--brass);color:#1A1206;border:1px solid var(--brass);border-radius:2px;
+.crc-sumbtn{background:var(--brass);color:var(--brass-ink);border:1px solid var(--brass);border-radius:2px;
   padding:8px 14px;font-family:inherit;font-size:12.5px;font-weight:600;cursor:pointer;
   display:flex;align-items:center;gap:8px;flex:none;transition:filter .12s ease;}
 .crc-sumbtn:hover{filter:brightness(1.08);}
 .crc-sumbtn-alert{box-shadow:0 0 0 3px rgba(192,128,58,.22);}
-.crc-sumbadge{background:#7A1E10;color:#fff;border-radius:2px;padding:1px 6px;
+.crc-sumbadge{background:var(--badge-bg);color:var(--on-dark);border-radius:2px;padding:1px 6px;
   font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;}
 .crc-sumgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));}
-.crc-sumstat{text-align:left;background:#fff;border:0;border-right:1px solid var(--rule-soft);
+.crc-sumstat{text-align:left;background:var(--panel);border:0;border-right:1px solid var(--rule-soft);
   border-bottom:1px solid var(--rule-soft);padding:14px 16px;font-family:inherit;cursor:pointer;}
 .crc-sumstat:hover{background:var(--brass-bg);}
 .crc-sumstat-v{font-family:'IBM Plex Mono',monospace;font-size:23px;font-weight:600;
@@ -7519,7 +7006,7 @@ const CSS = `
 .crc-issue{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:16px;align-items:start;
   padding:12px 16px;border-bottom:1px solid var(--rule-soft);border-left:4px solid transparent;}
 .crc-issue:last-child{border-bottom:0;}
-.crc-issue-critical{border-left-color:var(--stop);background:#FDF8F7;}
+.crc-issue-critical{border-left-color:var(--stop);background:var(--stop-soft);}
 .crc-issue-warning{border-left-color:var(--caution);}
 .crc-issue-watch{border-left-color:var(--rule);}
 .crc-issue-tag{display:flex;flex-direction:column;gap:4px;align-items:flex-start;}
@@ -7532,13 +7019,162 @@ const CSS = `
 .crc-subhead-flat{padding:0 0 7px;border-bottom:1px solid var(--rule-soft);}
 .crc-flaglist{list-style:none;margin:0;padding:0 16px 14px;display:flex;flex-direction:column;gap:7px;}
 .crc-flag{font-size:12.5px;line-height:1.5;padding:9px 11px;border-left:3px solid var(--rule);
-  background:#FBFCFD;max-width:96ch;}
-.crc-flag-stop{border-left-color:var(--stop);background:#FDF6F4;color:#8C2717;}
-.crc-flag-caution{border-left-color:var(--caution);background:#FFFCF6;color:#7A4D04;}
-.crc-flag-signal{border-left-color:var(--signal);background:var(--signal-bg);color:#26527D;}
+  background:var(--tint2);max-width:96ch;}
+.crc-flag-stop{border-left-color:var(--stop);background:var(--stop-soft);color:var(--stop-ink);}
+.crc-flag-caution{border-left-color:var(--caution);background:var(--caution-soft);color:var(--caution-ink);}
+.crc-flag-signal{border-left-color:var(--signal);background:var(--signal-bg);color:var(--signal-ink);}
 .crc-prog-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
-.crc-addso{border:1px solid var(--rule);border-radius:2px;background:#fff;padding:8px 10px;
+.crc-addso{border:1px solid var(--rule);border-radius:2px;background:var(--panel);padding:8px 10px;
   font-family:inherit;font-size:12.5px;color:var(--ink);max-width:290px;}
+
+/* choosing what the run plans: a plant, then any number of materials at it */
+.crc-pickfield{display:flex;align-items:center;gap:7px;}
+.crc-pickfield-l{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--ink3);}
+.crc-btn-open{border-color:var(--brass);box-shadow:inset 0 -2px 0 var(--brass);}
+.crc-matpick{border-top:1px solid var(--rule);background:var(--panel-2);padding:13px 16px 15px;}
+.crc-matpick-head{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:baseline;
+  font-size:12px;color:var(--ink2);max-width:none;}
+.crc-matpick-head .crc-head-right{display:flex;gap:12px;align-items:baseline;}
+.crc-sevcounts{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.crc-sevcount{font-size:11px;padding:3px 9px;border-radius:2px;border:1px solid var(--rule-soft);
+  background:var(--panel-2);color:var(--ink2);}
+.crc-sevcount b{font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;margin-right:3px;}
+.crc-sevcount-stop{background:var(--stop-bg);border-color:var(--stop);color:var(--stop);}
+.crc-sevcount-caution{background:var(--caution-bg);border-color:var(--caution);color:var(--caution);}
+.crc-sevcount-signal{background:var(--signal-bg);border-color:var(--signal);color:var(--signal);}
+.crc-sevcount-off{opacity:.6;}
+/* ---- the printable export ---- */
+.crc-printdoc{display:none;}
+.crc-pd-t{font-size:17px;font-weight:600;margin:0 0 10px;}
+.crc-pd-meta{border-collapse:collapse;margin-bottom:18px;font-size:11px;}
+.crc-pd-meta th{text-align:left;padding:2px 14px 2px 0;color:var(--ink3);font-weight:600;
+  white-space:nowrap;vertical-align:top;}
+.crc-pd-meta td{padding:2px 0;}
+.crc-pd-sec{margin-bottom:22px;break-inside:auto;}
+.crc-pd-h{font-size:13px;font-weight:600;margin:0 0 6px;border-bottom:1.5px solid var(--ink);
+  padding-bottom:3px;display:flex;justify-content:space-between;align-items:baseline;}
+.crc-pd-h span{font-size:10px;font-weight:400;color:var(--ink3);}
+.crc-pd-table{width:100%;border-collapse:collapse;font-size:8px;table-layout:fixed;}
+.crc-pd-table th{text-align:left;background:#EEF2F5;border:1px solid #B9C6D0;padding:3px 4px;
+  font-weight:600;word-wrap:break-word;}
+.crc-pd-table td{border:1px solid #D4DDE4;padding:3px 4px;vertical-align:top;word-wrap:break-word;}
+.crc-pd-table tr{break-inside:avoid;}
+@media print{
+  .crc-printing .crc-header,
+  .crc-printing .crc-shell,
+  .crc-printing .crc-totop{display:none!important;}
+  .crc-printing .crc-printdoc{display:block;}
+  .crc-pd-sec{break-before:page;}
+  .crc-pd-sec:first-of-type{break-before:auto;}
+}
+
+/* ---- export dialog ---- */
+.crc-exp{max-width:1040px;}
+.crc-exp-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;padding:16px;}
+@media(max-width:860px){.crc-exp-grid{grid-template-columns:1fr;}}
+.crc-exp-t{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--ink3);margin-bottom:7px;}
+.crc-exp-t2{margin-top:18px;}
+.crc-exp-secs{display:flex;flex-direction:column;gap:1px;}
+.crc-exp-field{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:10px;}
+.crc-exp-chips{display:flex;gap:5px;align-items:center;flex-wrap:wrap;}
+.crc-exp-chip{flex:none;border:1px solid var(--rule);border-radius:2px;padding:5px 11px;}
+.crc-exp-to{font-size:11px;color:var(--ink3);}
+.crc-exp-note{font-size:11px;color:var(--ink3);line-height:1.5;max-width:52ch;margin-top:2px;}
+.crc-exp-formats{display:flex;flex-direction:column;gap:1px;}
+.crc-exp-fmt-on{background:var(--signal-bg);border-color:var(--signal)!important;}
+.crc-exp-err{margin:0 16px 14px;padding:10px 12px;border-left:3px solid var(--stop);
+  background:var(--stop-soft);color:var(--stop-ink);font-size:12.5px;}
+
+/* ---- capacity heatmap ---- */
+.crc-heat{padding:2px 0 4px;}
+.crc-heat-grid{display:grid;gap:2px;align-items:stretch;overflow-x:auto;}
+.crc-heat-h{font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--ink3);padding:0 4px 5px;align-self:end;}
+.crc-heat-hc{text-align:center;}
+.crc-heat-n{display:flex;flex-direction:column;justify-content:center;padding:4px 8px 4px 2px;
+  font-size:12px;min-width:0;}
+.crc-heat-n .crc-mono{font-size:11.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.crc-heat-sub{font-size:10px;color:var(--ink3);margin-top:1px;}
+.crc-heat-off{opacity:.55;}
+.crc-heat-c{display:flex;align-items:center;justify-content:center;min-height:26px;border-radius:2px;
+  font-family:'IBM Plex Mono',monospace;font-size:10.5px;font-variant-numeric:tabular-nums;}
+.crc-heat-idle{background:var(--track);color:transparent;}
+.crc-heat-na{background:repeating-linear-gradient(45deg,var(--track),var(--track) 3px,var(--panel) 3px,var(--panel) 6px);}
+.crc-heat-easy{background:var(--go-bg);color:var(--go);}
+.crc-heat-busy{background:var(--caution-bg);color:var(--caution);}
+.crc-heat-tight{background:var(--brass-bg2);color:var(--brass-ink2);font-weight:600;}
+.crc-heat-over{background:var(--stop-bg);color:var(--stop);font-weight:600;}
+.crc-heat-peak{display:flex;align-items:center;gap:6px;padding-left:6px;}
+.crc-heat-bar{flex:1;height:8px;background:var(--track);border-radius:1px;overflow:hidden;min-width:24px;}
+.crc-heat-fill{display:block;height:8px;}
+.crc-heat-pk{font-family:'IBM Plex Mono',monospace;font-size:10.5px;white-space:nowrap;}
+.crc-heat-sw{width:11px;height:11px;border-radius:2px;display:inline-block;}
+
+/* ---- a table asked to read louder than the rest ---- */
+.crc-bold-data tbody td{font-weight:600;color:var(--ink);}
+.crc-bold-data tbody td .crc-matdesc,
+.crc-bold-data tbody td .crc-dim,
+.crc-bold-data tbody td.crc-dim{font-weight:400;}
+
+/* ---- consumption history ---- */
+.crc-consfilters{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:13px 16px;
+  border-bottom:1px solid var(--rule-soft);background:var(--panel-2);}
+.crc-consfilters-note{font-size:11px;color:var(--ink3);margin-left:auto;}
+.crc-th-spark{width:124px;}
+.crc-spark-svg{width:108px;height:26px;display:block;}
+
+/* ---- F4 material search ---- */
+.crc-kbd2{font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:600;padding:1px 4px;
+  border-radius:2px;background:var(--neutral-bg);border:1px solid var(--rule-soft);
+  color:var(--ink3);margin-left:7px;letter-spacing:.02em;}
+.crc-f4wrap{position:fixed;inset:0;z-index:90;background:rgba(10,16,21,.55);
+  display:flex;align-items:flex-start;justify-content:center;padding:7vh 16px 16px;}
+.crc-f4{width:100%;max-width:920px;background:var(--panel);border:1px solid var(--rule);
+  border-radius:4px;box-shadow:0 18px 50px rgba(10,16,21,.4);display:flex;flex-direction:column;
+  max-height:82vh;overflow:hidden;}
+.crc-f4-top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;
+  padding:14px 16px 12px;border-bottom:1px solid var(--rule-soft);}
+.crc-f4-t{font-size:15px;font-weight:600;}
+.crc-f4-s{font-size:12px;color:var(--ink2);margin-top:3px;max-width:76ch;}
+.crc-f4-x{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--ink3);
+  background:var(--tint);border:1px solid var(--rule-soft);border-radius:2px;padding:3px 7px;
+  cursor:pointer;flex:none;}
+.crc-f4-x:hover{color:var(--ink);border-color:var(--rule);}
+.crc-f4-filters{display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:11px 16px;
+  border-bottom:1px solid var(--rule-soft);background:var(--panel-2);}
+.crc-f4-q{flex:1 1 300px;max-width:400px;border:1px solid var(--rule);border-radius:2px;
+  background:var(--panel);padding:8px 10px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--ink);}
+.crc-f4-q:focus{border-color:var(--signal);outline:none;box-shadow:0 0 0 2px var(--signal-bg);}
+.crc-f4-q::placeholder{font-family:'IBM Plex Sans',sans-serif;color:var(--ink3);}
+.crc-f4-count{font-size:11px;color:var(--ink3);margin-left:auto;}
+.crc-f4-body{overflow-y:auto;flex:1;}
+.crc-f4-table th{position:sticky;top:0;z-index:2;}
+.crc-f4-none{padding:20px 16px;font-size:13px;color:var(--ink2);}
+.crc-f4-foot{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:10px 16px;
+  border-top:1px solid var(--rule-soft);background:var(--panel-2);font-size:11px;color:var(--ink3);}
+.crc-f4-foot-r{margin-left:auto;display:flex;gap:12px;align-items:center;}
+@media print{.crc-f4wrap{display:none!important;}}
+
+.crc-matpick-search{display:flex;align-items:center;gap:12px;margin-top:11px;flex-wrap:wrap;}
+.crc-matpick-q{flex:1 1 320px;max-width:420px;border:1px solid var(--rule);border-radius:2px;
+  background:var(--panel);padding:8px 10px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;
+  color:var(--ink);}
+.crc-matpick-q:focus{border-color:var(--signal);outline:none;box-shadow:0 0 0 2px var(--signal-bg);}
+.crc-matpick-q::placeholder{font-family:'IBM Plex Sans',sans-serif;color:var(--ink3);}
+.crc-matpick-count{font-size:11px;color:var(--ink3);}
+.crc-matpick-none{margin-top:12px;font-size:12.5px;color:var(--ink2);}
+.crc-matpick-group{margin-top:12px;}
+.crc-matpick-t{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--ink3);margin-bottom:6px;}
+.crc-matpick-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:2px 14px;}
+.crc-matpick-i{display:flex;gap:8px;align-items:flex-start;padding:5px 7px;border-radius:2px;
+  cursor:pointer;border:1px solid transparent;}
+.crc-matpick-i:hover{background:var(--tint);border-color:var(--rule-soft);}
+.crc-matpick-i input{margin-top:2px;flex:none;}
+.crc-matpick-i .crc-matdesc{margin-top:1px;}
+.crc-matpick-in{opacity:.55;cursor:not-allowed;}
+.crc-matpick-in:hover{background:transparent;border-color:transparent;}
 .crc-inline-so{max-width:190px;font-family:'IBM Plex Mono',monospace;font-size:12px;}
 .crc-actionline{font-size:11.5px;color:var(--ink2);margin-top:4px;max-width:46ch;line-height:1.45;}
 .crc-ctx-scope{display:flex;align-items:center;}
@@ -7555,23 +7191,23 @@ const CSS = `
 
 /* ---- screen rail ---- */
 .crc-shell{grid-template-columns:216px minmax(0,1fr);}
-.crc-rail{background:var(--ink);border-radius:3px;padding:8px 0 4px;position:sticky;top:16px;
+.crc-rail{background:var(--head-bg);border-radius:3px;padding:8px 0 4px;position:sticky;top:16px;
   align-self:start;overflow:hidden;box-shadow:0 1px 3px rgba(20,33,42,.16);}
 @media(max-width:1000px){.crc-rail{position:static;}}
 .crc-railgroup{padding-bottom:8px;}
-.crc-railgroup-t{padding:10px 14px 5px;font-size:10px;color:#6E8494;letter-spacing:.06em;
+.crc-railgroup-t{padding:10px 14px 5px;font-size:10px;color:var(--rail-ink3);letter-spacing:.06em;
   text-transform:none;font-weight:500;}
 .crc-railbtn{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;
   padding:7px 14px;background:none;border:0;border-left:3px solid transparent;
-  font-family:inherit;font-size:12.5px;color:#AFC0CD;cursor:pointer;text-align:left;
+  font-family:inherit;font-size:12.5px;color:var(--rail-ink);cursor:pointer;text-align:left;
   transition:color .12s ease,background .12s ease;}
-.crc-railbtn:hover{color:#fff;background:rgba(255,255,255,.05);}
-.crc-railbtn-on{color:#fff;background:rgba(192,128,58,.13);border-left-color:var(--brass);font-weight:500;}
-.crc-railcount{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#8FA5B3;
+.crc-railbtn:hover{color:var(--on-dark);background:rgba(255,255,255,.05);}
+.crc-railbtn-on{color:var(--on-dark);background:rgba(192,128,58,.13);border-left-color:var(--brass);font-weight:500;}
+.crc-railcount{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--rail-ink2);
   background:rgba(0,0,0,.28);padding:1px 5px;border-radius:2px;min-width:18px;text-align:center;}
-.crc-railbtn-on .crc-railcount{background:var(--brass);color:#121D25;font-weight:600;}
+.crc-railbtn-on .crc-railcount{background:var(--brass);color:var(--brass-ink);font-weight:600;}
 .crc-railfoot{padding:11px 14px;margin-top:4px;border-top:1px solid rgba(255,255,255,.09);
-  font-size:10.5px;color:#6E8494;line-height:1.5;}
+  font-size:10.5px;color:var(--rail-ink3);line-height:1.5;}
 
 /* ---- context strip ---- */
 .crc-ctx{background:var(--panel);border:1px solid var(--rule);border-left-width:5px;border-radius:3px;
@@ -7580,10 +7216,10 @@ const CSS = `
 .crc-ctx-go{border-left-color:var(--go);} .crc-ctx-caution{border-left-color:var(--caution);}
 .crc-ctx-stop{border-left-color:var(--stop);}
 .crc-ctx-lines{display:flex;gap:5px;flex-wrap:wrap;}
-.crc-ctxbtn{background:#fff;border:1px solid var(--rule);border-radius:2px;padding:4px 9px;
+.crc-ctxbtn{background:var(--panel);border:1px solid var(--rule);border-radius:2px;padding:4px 9px;
   font-family:inherit;font-size:12px;color:var(--ink2);cursor:pointer;display:flex;align-items:baseline;gap:6px;}
-.crc-ctxbtn:hover{background:#F4F7F9;}
-.crc-ctxbtn-on{background:var(--ink);color:#fff;border-color:var(--ink);box-shadow:inset 0 -2px 0 var(--brass);}
+.crc-ctxbtn:hover{background:var(--tint);}
+.crc-ctxbtn-on{background:var(--invert-bg);color:var(--invert-ink);border-color:var(--invert-bg);box-shadow:inset 0 -2px 0 var(--brass);}
 .crc-ctxbtn-q{font-family:'IBM Plex Mono',monospace;font-size:10.5px;opacity:.7;}
 .crc-ctx-verdict{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;}
 .crc-ctx-word{font-size:13px;font-weight:600;}
@@ -7596,12 +7232,12 @@ const CSS = `
 .crc-combo{position:relative;}
 .crc-combo-in{width:100%;max-width:230px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;
   text-transform:uppercase;padding-right:20px;}
-.crc-combo-bad{border-color:var(--stop)!important;background:#FFF8F6;}
-.crc-combo-warn{border-color:var(--caution)!important;background:#FFFCF6;}
-.crc-combo-toggle{position:absolute;right:2px;top:3px;width:17px;height:19px;border:0;background:none;
+.crc-combo-bad{border-color:var(--stop)!important;background:var(--stop-soft);}
+.crc-combo-warn{border-color:var(--caution)!important;background:var(--caution-soft);}
+.crc-combo-toggle{position:absolute;right:3px;top:4px;width:17px;height:19px;border:0;background:none;
   color:var(--ink3);font-size:10px;cursor:pointer;padding:0;line-height:1;}
 .crc-combo-list{position:absolute;z-index:20;top:100%;left:0;min-width:330px;margin:2px 0 0;padding:3px;
-  list-style:none;background:#fff;border:1px solid var(--rule);border-radius:2px;
+  list-style:none;background:var(--panel);border:1px solid var(--rule);border-radius:2px;
   box-shadow:0 4px 14px rgba(27,42,51,.14);max-height:250px;overflow:auto;}
 .crc-combo-list button{display:grid;grid-template-columns:130px 1fr auto;gap:9px;align-items:baseline;
   width:100%;text-align:left;background:none;border:0;padding:5px 7px;font-family:inherit;
@@ -7613,32 +7249,8 @@ const CSS = `
 .crc-combo-msgbad{color:var(--stop);}
 .crc-combo-msgwarn{color:var(--caution);}
 
-/* ---- SAP mapping ---- */
-.crc-sapintro{padding:14px 16px;border-bottom:1px solid var(--rule-soft);}
-.crc-sapintro p{font-size:12.5px;color:var(--ink2);line-height:1.55;max-width:82ch;margin-bottom:8px;}
-.crc-sapintro p:last-child{margin-bottom:0;}
-.crc-sap{border-bottom:1px solid var(--rule);}
-.crc-sap:last-of-type{border-bottom:0;}
-.crc-sap-head{padding:13px 16px 9px;display:flex;justify-content:space-between;gap:22px;flex-wrap:wrap;}
-.crc-sap-head h4{font-size:13px;}
-.crc-sap-target{font-size:11.5px;color:var(--ink3);margin-top:2px;}
-.crc-sap-meta{display:flex;gap:22px;flex-wrap:wrap;}
-.crc-sap-meta dt{font-size:10.5px;color:var(--ink3);}
-.crc-sap-meta dd{margin:1px 0 0;font-size:11.5px;max-width:40ch;}
-.crc-sap-tables{display:flex;flex-wrap:wrap;gap:7px;padding:0 16px 11px;}
-.crc-sap-table{display:flex;flex-direction:column;gap:1px;border:1px solid var(--rule-soft);
-  border-left:3px solid var(--signal);border-radius:2px;padding:5px 9px;background:#FBFCFD;}
-.crc-sap-table .crc-mono{font-size:12px;font-weight:600;}
-.crc-sap-tt{font-size:11px;color:var(--ink2);}
-.crc-sap-key{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--ink3);}
-.crc-saptable th{background:#F7F9FA;}
-.crc-saptable td,.crc-saptable th{padding:6px 16px;}
-.crc-sap-fld{color:var(--signal);}
-.crc-sap-note{margin:0 16px 13px;padding:9px 11px;background:var(--signal-bg);
-  border-left:3px solid var(--signal);font-size:12.5px;color:#26527D;line-height:1.5;max-width:88ch;}
-
 /* ---- production version ---- */
-.crc-pv{border-bottom:1px solid var(--rule);background:#FBFCFD;}
+.crc-pv{border-bottom:1px solid var(--rule);background:var(--tint2);}
 .crc-pv-active{padding:14px 16px;display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;}
 .crc-pv-lead{min-width:250px;}
 .crc-pv-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
@@ -7649,16 +7261,16 @@ const CSS = `
 .crc-pv-facts dd{margin:2px 0 0;font-family:'IBM Plex Mono',monospace;font-size:12px;
   font-variant-numeric:tabular-nums;}
 .crc-pv-warn{margin:0 16px 12px;padding:9px 11px;background:var(--caution-bg);
-  border-left:3px solid var(--caution);font-size:12.5px;color:#7A4D04;line-height:1.5;}
+  border-left:3px solid var(--caution);font-size:12.5px;color:var(--caution-ink);line-height:1.5;}
 .crc-pvtable{border-top:1px solid var(--rule-soft);}
-.crc-pvtable th{background:#F7F9FA;}
+.crc-pvtable th{background:var(--tint);}
 .crc-pvtable td,.crc-pvtable th{padding:7px 16px;}
 .crc-pv-on{background:var(--signal-bg);}
 .crc-pv-foot{padding:10px 16px;font-size:12px;color:var(--ink3);border-top:1px solid var(--rule-soft);}
 .crc-pvwarn{color:var(--caution);font-weight:700;}
-.crc-minibtn{background:var(--ink);color:#fff;border:0;border-radius:2px;padding:3px 10px;
+.crc-minibtn{background:var(--invert-bg);color:var(--invert-ink);border:0;border-radius:2px;padding:3px 10px;
   font-family:inherit;font-size:11.5px;cursor:pointer;}
-.crc-minibtn:hover{background:#0F1A22;}
+.crc-minibtn:hover{background:var(--ink-hover);}
 .crc-linkbtn{background:none;border:0;padding:0;font-family:inherit;font-size:12px;
   color:var(--signal);text-decoration:underline;cursor:pointer;}
 
@@ -7669,24 +7281,31 @@ const CSS = `
   gap:18px;border-bottom:1px solid var(--rule-soft);flex-wrap:wrap;}
 .crc-prog-head h3{font-size:15px;letter-spacing:-0.012em;}
 .crc-prog-head p{font-size:12.5px;color:var(--ink2);margin-top:3px;max-width:70ch;line-height:1.5;}
-.crc-btn-light{background:#fff;color:var(--ink);border:1px solid var(--rule);}
-.crc-btn-light:hover:not(:disabled){background:#F4F7F9;}
+.crc-btn-light{background:var(--panel);color:var(--ink);border:1px solid var(--rule);}
+.crc-btn-light:hover:not(:disabled){background:var(--tint);}
 .crc-progtable tbody tr{cursor:pointer;}
 .crc-progtable tbody tr.crc-prog-on{background:var(--brass-bg);box-shadow:inset 3px 0 0 var(--brass);}
-.crc-progtable tbody tr.crc-prog-on:hover{background:#F3E5D2;}
+.crc-progtable tbody tr.crc-prog-on:hover{background:var(--brass-bg2);}
 .crc-progtable td{vertical-align:middle;}
 .crc-inline{border:1px solid transparent;border-radius:2px;background:transparent;padding:4px 5px;
   font-family:'IBM Plex Sans',sans-serif;font-size:12.5px;color:var(--ink);max-width:250px;width:100%;}
-.crc-inline:hover{border-color:var(--rule);background:#fff;}
-.crc-inline:focus{border-color:var(--signal);background:#fff;}
+.crc-inline:hover{border-color:var(--rule);background:var(--panel);}
+.crc-inline:focus{border-color:var(--signal);background:var(--panel);}
+/* The material cell is a text box you can type a code straight into. Left with
+   the transparent .crc-inline treatment it read as a static label and nobody
+   discovered that, so it carries a visible box and caret at rest. */
+input.crc-combo-in{border-color:var(--rule);background:var(--panel);padding:5px 22px 5px 7px;}
+input.crc-combo-in:hover{border-color:var(--ink3);}
+input.crc-combo-in:focus{border-color:var(--signal);box-shadow:0 0 0 2px var(--signal-bg);}
+input.crc-combo-in::placeholder{color:var(--ink3);font-family:'IBM Plex Sans',sans-serif;}
 .crc-inline-sm{max-width:132px;font-family:'IBM Plex Mono',monospace;font-size:12px;}
 .crc-inline-num{max-width:76px;text-align:right;font-family:'IBM Plex Mono',monospace;
   font-variant-numeric:tabular-nums;font-size:12.5px;}
 .crc-th-act{width:96px;}
 .crc-acts{display:flex;gap:3px;justify-content:flex-end;}
-.crc-iconbtn{width:22px;height:22px;border:1px solid var(--rule);background:#fff;border-radius:2px;
+.crc-iconbtn{width:22px;height:22px;border:1px solid var(--rule);background:var(--panel);border-radius:2px;
   font-family:inherit;font-size:12px;line-height:1;color:var(--ink2);cursor:pointer;padding:0;}
-.crc-iconbtn:hover:not(:disabled){background:#F0F3F5;color:var(--ink);}
+.crc-iconbtn:hover:not(:disabled){background:var(--tint);color:var(--ink);}
 .crc-iconbtn:disabled{opacity:.35;cursor:not-allowed;}
 .crc-iconbtn-del:hover:not(:disabled){background:var(--stop-bg);color:var(--stop);border-color:var(--stop);}
 .crc-prog-note{padding:11px 16px;border-top:1px solid var(--rule-soft);font-size:12.5px;
@@ -7698,9 +7317,9 @@ const CSS = `
 .crc-cont:last-child{border-bottom:0;}
 .crc-cont-head{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:flex-start;}
 .crc-cont-figs{display:flex;gap:22px;flex-wrap:wrap;}
-.crc-cont-bar{display:flex;height:13px;border-radius:1px;overflow:hidden;background:#E7ECEF;margin:14px 0 12px;}
+.crc-cont-bar{display:flex;height:13px;border-radius:1px;overflow:hidden;background:var(--track);margin:14px 0 12px;}
 .crc-cont-seg{height:100%;}
-.crc-cont-gap{background:repeating-linear-gradient(45deg,#F0D9D3,#F0D9D3 4px,#F8E9E5 4px,#F8E9E5 8px);}
+.crc-cont-gap{background:repeating-linear-gradient(45deg,var(--gap-a),var(--gap-a) 4px,var(--gap-b) 4px,var(--gap-b) 8px);}
 .crc-conttable{width:100%;border-collapse:collapse;font-size:12.5px;}
 .crc-conttable th{text-align:left;font-weight:600;font-size:11px;color:var(--ink2);
   padding:6px 9px;border-bottom:1px solid var(--rule-soft);white-space:nowrap;}
@@ -7713,7 +7332,7 @@ const CSS = `
 .crc-status-go{background:var(--go-bg);color:var(--go);}
 .crc-status-stop{background:var(--stop-bg);color:var(--stop);}
 .crc-status-signal{background:var(--signal-bg);color:var(--signal);}
-.crc-status-neutral{background:#EFF1F3;color:var(--ink2);}
+.crc-status-neutral{background:var(--neutral-bg);color:var(--ink2);}
 .crc-mvt{font-family:'IBM Plex Sans',sans-serif;font-size:10px;font-weight:500;
   padding:0 4px;border-radius:2px;}
 .crc-mvt-in{background:var(--go-bg);color:var(--go);}
@@ -7723,14 +7342,14 @@ const CSS = `
 .crc-mvt-minus{color:var(--caution);}
 .crc-subhead-split{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;}
 .crc-seg-4 .crc-seg-btn{padding:6px 2px;font-size:11px;}
-.crc-vendorqty{color:#16706B;}
+.crc-vendorqty{color:var(--teal-ink);}
 
 .crc-switch{display:flex;gap:9px;align-items:flex-start;cursor:pointer;}
 .crc-switch input{accent-color:var(--signal);width:15px;height:15px;margin-top:2px;flex:none;}
 .crc-switch strong{display:block;font-size:13px;font-weight:600;}
 .crc-switch em{display:block;font-style:normal;font-size:12px;color:var(--ink2);margin-top:2px;line-height:1.45;}
 .crc-note{margin-top:10px;padding:8px 9px;background:var(--signal-bg);border-left:3px solid var(--signal);
-  font-size:12px;color:#26527D;line-height:1.45;}
+  font-size:12px;color:var(--signal-ink);line-height:1.45;}
 
 /* ---- verdict ---- */
 .crc-verdict{background:var(--panel);border:1px solid var(--rule);border-radius:3px;
@@ -7759,6 +7378,16 @@ const CSS = `
   font-size:12.5px;color:var(--ink2);display:flex;justify-content:space-between;
   gap:16px;flex-wrap:wrap;align-items:baseline;}
 .crc-panel-flag{color:var(--caution);}
+.crc-panel-ok{color:var(--go);}
+/* capacity status column: the pill answers "can I load more onto this centre",
+   the note underneath says by how much */
+.crc-th-cap{min-width:190px;}
+.crc-capnote{display:block;font-size:11px;color:var(--ink3);margin-top:3px;line-height:1.35;}
+/* the breakdown that used to be its own columns, folded under the total it belongs to */
+.crc-cellsub{font-family:'IBM Plex Sans',sans-serif;font-size:10.5px;font-weight:400;
+  color:var(--ink3);margin-top:2px;line-height:1.35;white-space:normal;max-width:26ch;}
+.crc-th-act2{min-width:220px;}
+.crc-th-when{width:82px;}
 .crc-tablewrap{overflow-x:auto;}
 .crc-table{width:100%;border-collapse:collapse;font-size:13px;}
 .crc-table th{text-align:left;font-weight:600;font-size:10.5px;color:var(--ink3);letter-spacing:.01em;
@@ -7768,11 +7397,18 @@ const CSS = `
 .crc-table tbody tr{transition:background .12s ease;}
 .crc-table tbody tr:hover{background:var(--panel-2);}
 .crc-num{text-align:right;font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;white-space:nowrap;}
+/* A bare th selector outranks the .crc-num and .crc-th-count classes on
+   specificity, so a numeric heading used to sit left while its column of values
+   sat right. These rules put every heading over its own values.
+   No backticks in this file's CSS - the whole sheet is a template literal. */
+.crc-table th.crc-num{text-align:right;}
+.crc-table th.crc-th-count{text-align:center;}
+.crc-table td.crc-th-count{text-align:center;}
 .crc-th-mat{text-align:left;min-width:230px;}
 .crc-th-off{color:var(--ink3);}
 .crc-th-sub{display:block;font-weight:400;font-size:10px;color:var(--ink3);margin-top:1px;}
-.crc-tr-short{background:#FEFBF5;}
-.crc-tr-short:hover{background:#FBF4E8;}
+.crc-tr-short{background:var(--caution-row);}
+.crc-tr-short:hover{background:var(--caution-row2);}
 .crc-matcell{display:flex;gap:7px;align-items:flex-start;}
 .crc-branch{width:9px;height:9px;border-left:1px solid var(--rule);border-bottom:1px solid var(--rule);
   margin-top:5px;flex:none;}
@@ -7781,7 +7417,7 @@ const CSS = `
 .crc-matdesc{font-size:11.5px;color:var(--ink3);margin-top:2px;line-height:1.4;}
 .crc-proc{font-family:'IBM Plex Sans',sans-serif;font-size:10px;font-weight:500;padding:0 4px;border-radius:2px;}
 .crc-proc-E{background:var(--signal-bg);color:var(--signal);}
-.crc-proc-F{background:#EFF1F3;color:var(--ink2);}
+.crc-proc-F{background:var(--neutral-bg);color:var(--ink2);}
 .crc-uom{font-size:11px;color:var(--ink3);}
 .crc-strong{font-weight:600;}
 .crc-dim{color:var(--ink3);}
@@ -7789,7 +7425,7 @@ const CSS = `
 .crc-excl{color:var(--caution);}
 .crc-date{color:var(--ink);font-family:'IBM Plex Mono',monospace;font-size:12.5px;}
 .crc-date-late{color:var(--stop);font-weight:600;font-family:'IBM Plex Mono',monospace;font-size:12.5px;}
-.crc-cell-off{background:#F5F7F9;color:var(--ink3);}
+.crc-cell-off{background:var(--tint);color:var(--ink3);}
 .crc-legend{padding:12px 16px;border-top:1px solid var(--rule-soft);background:var(--panel-2);
   font-size:11.5px;color:var(--ink3);line-height:1.55;max-width:96ch;
   border-radius:0 0 3px 3px;}
@@ -7809,7 +7445,7 @@ const CSS = `
 .crc-short-head{width:100%;background:transparent;border:0;border-left:4px solid transparent;
   padding:13px 16px;display:flex;align-items:center;justify-content:space-between;gap:18px;
   cursor:pointer;text-align:left;font-family:inherit;flex-wrap:wrap;}
-.crc-short-head:hover{background:#FAFBFC;}
+.crc-short-head:hover{background:var(--tint2);}
 .crc-short-coverable .crc-short-head{border-left-color:var(--caution);}
 .crc-short-late .crc-short-head{border-left-color:var(--stop);}
 .crc-short-figs{display:flex;align-items:center;gap:22px;flex-wrap:wrap;}
@@ -7820,10 +7456,10 @@ const CSS = `
   transform:rotate(45deg);transition:transform .15s ease;flex:none;}
 .crc-chev-open{transform:rotate(-135deg);}
 @media(prefers-reduced-motion:reduce){.crc-chev{transition:none;}}
-.crc-short-body{padding:4px 16px 20px 20px;background:#FBFCFD;border-top:1px solid var(--rule-soft);}
+.crc-short-body{padding:4px 16px 20px 20px;background:var(--tint2);border-top:1px solid var(--rule-soft);}
 
 .crc-timeline{padding:16px 0 6px;}
-.crc-tl-track{position:relative;height:11px;background:#EFF2F4;border-radius:1px;margin:24px 0 6px;}
+.crc-tl-track{position:relative;height:11px;background:var(--track);border-radius:1px;margin:24px 0 6px;}
 .crc-tl-seg{position:absolute;top:0;height:11px;border-radius:1px;}
 .crc-tl-need{position:absolute;top:-18px;bottom:-6px;width:1.5px;background:var(--ink);}
 .crc-tl-need-label{position:absolute;top:-14px;left:6px;font-size:10.5px;color:var(--ink);white-space:nowrap;}
@@ -7831,8 +7467,8 @@ const CSS = `
   font-family:'IBM Plex Mono',monospace;}
 
 .crc-steps{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:1px;}
-.crc-step{display:flex;gap:11px;padding:11px 12px;background:#fff;border:1px solid var(--rule-soft);}
-.crc-step-rank{width:20px;height:20px;border-radius:2px;background:var(--ink);color:#fff;
+.crc-step{display:flex;gap:11px;padding:11px 12px;background:var(--panel);border:1px solid var(--rule-soft);}
+.crc-step-rank{width:20px;height:20px;border-radius:2px;background:var(--invert-bg);color:var(--invert-ink);
   font-family:'IBM Plex Mono',monospace;font-size:11px;display:flex;align-items:center;justify-content:center;flex:none;}
 .crc-step-pr .crc-step-rank{background:var(--stop);}
 .crc-step-expedite .crc-step-rank{background:var(--caution);}
@@ -7843,10 +7479,10 @@ const CSS = `
 .crc-step-meta{display:flex;gap:16px;margin-top:6px;font-size:11px;color:var(--ink3);flex-wrap:wrap;}
 .crc-cost-new{color:var(--stop);} .crc-cost-free{color:var(--go);}
 
-.crc-exclbox{margin-top:14px;border:1px solid var(--caution);border-left-width:3px;background:#FFFCF6;padding:11px 12px;}
+.crc-exclbox{margin-top:14px;border:1px solid var(--caution);border-left-width:3px;background:var(--caution-soft);padding:11px 12px;}
 .crc-exclbox-title{font-size:12px;font-weight:600;color:var(--caution);margin-bottom:7px;}
 .crc-exclrow{display:grid;grid-template-columns:56px 150px 90px minmax(0,1fr);gap:10px;
-  font-size:12px;padding:4px 0;border-top:1px solid #F0E4CE;align-items:baseline;}
+  font-size:12px;padding:4px 0;border-top:1px solid var(--brass-rule);align-items:baseline;}
 .crc-exclrow:first-of-type{border-top:0;}
 .crc-exclnote{color:var(--ink2);}
 @media(max-width:700px){.crc-exclrow{grid-template-columns:1fr;gap:2px;}}
@@ -7860,7 +7496,7 @@ const CSS = `
 .crc-empty-sm{padding:20px;text-align:left;}
 .crc-empty-title{font-size:16px;font-weight:600;color:var(--ink);margin-bottom:6px;letter-spacing:-0.012em;}
 .crc-error{margin:12px 0 0;padding:10px 12px;background:var(--stop-bg);border-left:3px solid var(--stop);
-  color:#8C2717;font-size:13px;}
+  color:var(--stop-ink);font-size:13px;}
 
 /* ---- analysis ---- */
 .crc-analysis{padding:18px 16px;display:flex;flex-direction:column;gap:18px;}
@@ -7872,19 +7508,107 @@ const CSS = `
   gap:18px;border-bottom:1px solid var(--rule-soft);flex-wrap:wrap;}
 .crc-aibox-head h4{font-size:13px;}
 .crc-aibox-head p{font-size:12.5px;color:var(--ink2);margin-top:3px;max-width:60ch;}
-.crc-btn{background:var(--ink);color:#fff;border:1px solid var(--ink);border-radius:2px;padding:8px 15px;
+.crc-btn{background:var(--invert-bg);color:var(--invert-ink);border:1px solid var(--invert-bg);border-radius:2px;padding:8px 15px;
   font-family:inherit;font-size:12.5px;font-weight:500;cursor:pointer;white-space:nowrap;
   transition:background .12s ease;}
-.crc-btn:hover:not(:disabled){background:#0F1A22;}
+.crc-btn:hover:not(:disabled){background:var(--ink-hover);}
 .crc-btn:disabled{background:var(--rule);color:var(--ink3);cursor:not-allowed;}
 .crc-plan{padding:16px;}
 .crc-plan-headline{font-size:16px;font-weight:600;line-height:1.4;max-width:72ch;}
 .crc-critical{margin:12px 0 16px;padding:11px 13px;background:var(--signal-bg);border-left:3px solid var(--signal);}
 .crc-critical span{font-size:11px;font-weight:600;color:var(--signal);}
-.crc-critical p{font-size:13px;color:#274F76;margin-top:3px;max-width:74ch;}
+.crc-critical p{font-size:13px;color:var(--signal-ink);margin-top:3px;max-width:74ch;}
 .crc-plantable{border:1px solid var(--rule-soft);}
 .crc-watch{margin-top:16px;}
 .crc-watch-title{font-size:12px;font-weight:600;margin-bottom:5px;}
 .crc-watch ul{margin:0;padding-left:18px;font-size:13px;color:var(--ink2);}
 .crc-watch li{margin-bottom:3px;max-width:76ch;}
 `;
+
+/* ============================================================
+   BOOT
+
+   The dashboard cannot render until the workbook has been read, so the
+   exported component is a gate in front of it. A blank page is the worst
+   failure mode here: if the file is missing, unreadable or served from
+   disk, say which and what to do about it.
+   ============================================================ */
+
+/* The boot screen renders before the stylesheet is mounted, so it carries its
+   own two palettes rather than tokens. It reads the stored preference directly:
+   flashing a white page at someone who chose the dark theme is exactly the kind
+   of thing a theme setting is supposed to prevent. */
+const BOOT_THEME = {
+  light: { bg: "#EDF1F4", ink: "#52646F", eyebrow: "#7C97AC", head: "#243B4A", stop: "#9C2A2A" },
+  dark:  { bg: "#0E161C", ink: "#A9BDC9", eyebrow: "#7C97AC", head: "#E3EBF1", stop: "#EE7A63" },
+};
+
+function BootMessage({ title, tone, children }) {
+  const c = BOOT_THEME[readStoredTheme()] || BOOT_THEME.light;
+  return (
+    <div style={{
+      font: '14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif',
+      color: c.ink,
+      background: c.bg,
+      minHeight: "100vh",
+      padding: "48px 32px",
+      boxSizing: "border-box",
+    }}>
+      <div style={{ maxWidth: "68ch" }}>
+        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", color: c.eyebrow }}>
+          {APP_NAME}
+        </div>
+        <h1 style={{ fontSize: 18, fontWeight: 600, margin: "6px 0 10px", color: tone === "stop" ? c.stop : c.head }}>
+          {title}
+        </h1>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+export default function ComponentReadinessCheck() {
+  const [phase, setPhase] = useState("loading");
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let live = true;
+    loadDataset().then(
+      () => { if (live) setPhase("ready"); },
+      (err) => {
+        if (!live) return;
+        setError(err);
+        setPhase("failed");
+      }
+    );
+    return () => { live = false; };
+  }, []);
+
+  if (phase === "loading") {
+    return (
+      <BootMessage title="Reading the workbook">
+        <p style={{ margin: 0 }}>
+          Loading master data, stock and orders from <code>{WORKBOOK_FILE}</code>.
+        </p>
+      </BootMessage>
+    );
+  }
+
+  if (phase === "failed") {
+    return (
+      <BootMessage title="The workbook could not be read" tone="stop">
+        <p style={{ margin: "0 0 14px" }}>
+          {(error && error.message) || String(error)}
+        </p>
+        <p style={{ margin: "0 0 6px", fontWeight: 600, fontSize: 13 }}>What to check</p>
+        <ul style={{ margin: 0, paddingLeft: 20 }}>
+          <li><code>{WORKBOOK_FILE}</code> sits in the same folder as this page.</li>
+          <li>The page is served over http, not opened from disk.</li>
+          <li>The workbook still has its <code>_Schema</code> sheet — rebuild it with <code>tools\build-workbook.ps1</code> if not.</li>
+        </ul>
+      </BootMessage>
+    );
+  }
+
+  return <ReadinessDashboard />;
+}
